@@ -95,12 +95,7 @@ def get_completed_batches():
     return df
 
 
-def get_batch_by_number(batch_number):
-    conn = sqlite3.connect('pigment.db')
-    df = pd.read_sql_query("SELECT * FROM batches WHERE batch_number = ?", (batch_number,), conn)
-    conn.close()
-    return df
-
+# REMOVED get_batch_by_number – we will filter within the COA function
 
 def get_recipe_by_id(recipe_id):
     conn = sqlite3.connect('pigment.db')
@@ -189,83 +184,89 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
 
 # ---------- REPORT FUNCTIONS ----------
 def generate_coa_pdf(batch_number):
-    # Fetch batch and recipe data
-    batch_df = get_batch_by_number(batch_number)
-    if batch_df.empty:
+    try:
+        # Fetch batch data using get_batches and filter
+        all_batches = get_batches()
+        batch_df = all_batches[all_batches['batch_number'] == batch_number]
+        if batch_df.empty:
+            return None
+        batch = batch_df.iloc[0]
+
+        recipe_df = get_recipe_by_id(batch['recipe_id'])
+        if recipe_df.empty:
+            return None
+        recipe = recipe_df.iloc[0]
+
+        # Prepare data for PDF table
+        params = [
+            ("TSC (%)", f"{recipe['tsc_min']:.1f} - {recipe['tsc_max']:.1f}", batch['tsc'],
+             recipe['tsc_min'] <= batch['tsc'] <= recipe['tsc_max']),
+            ("pH", f"{recipe['ph_min']:.1f} - {recipe['ph_max']:.1f}", batch['ph'],
+             recipe['ph_min'] <= batch['ph'] <= recipe['ph_max']),
+            ("Viscosity (cP)", f"{recipe['visc_min']:.0f} - {recipe['visc_max']:.0f}", batch['visc'],
+             recipe['visc_min'] <= batch['visc'] <= recipe['visc_max']),
+            ("DE", f"≤ {recipe['de_max']:.2f}", batch['de'], batch['de'] <= recipe['de_max']),
+            ("DL", f"± {recipe['dl_tolerance']:.2f}", batch['dl'], abs(batch['dl']) <= recipe['dl_tolerance']),
+            ("Da", f"± {recipe['da_tolerance']:.2f}", batch['da'], abs(batch['da']) <= recipe['da_tolerance']),
+            ("Db", f"± {recipe['db_tolerance']:.2f}", batch['db'], abs(batch['db']) <= recipe['db_tolerance']),
+            ("Colour Strength (%)", f"{recipe['strength_min']:.0f} - {recipe['strength_max']:.0f}",
+             batch['colour_strength'], recipe['strength_min'] <= batch['colour_strength'] <= recipe['strength_max'])
+        ]
+
+        # Create PDF in memory
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Title
+        title_style = ParagraphStyle('Title', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
+        story.append(Paragraph("CERTIFICATE OF ANALYSIS", title_style))
+
+        # Header Info
+        info_style = styles['Normal']
+        story.append(Paragraph(f"<b>Batch Number:</b> {batch['batch_number']}", info_style))
+        story.append(Paragraph(f"<b>Colour Code:</b> {batch['colour_code']} - {recipe['colour_name']}", info_style))
+        story.append(Paragraph(f"<b>Manufacturing Date:</b> {batch['manufacturing_date']}", info_style))
+        story.append(Paragraph(f"<b>Attempt Count:</b> {batch['attempt_count']}", info_style))
+        story.append(Paragraph(f"<b>Status:</b> {batch['status']}", info_style))
+        story.append(Spacer(1, 10))
+
+        # Results Table
+        table_data = [["Parameter", "Specification", "Result", "Status"]]
+        for param, spec, result, passed in params:
+            status_text = "✅ PASS" if passed else "❌ FAIL"
+            table_data.append([param, spec, f"{result:.2f}", status_text])
+
+        t = Table(table_data, colWidths=[80, 100, 80, 80])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(t)
+
+        # Footer / Remarks
+        story.append(Spacer(1, 20))
+        story.append(Paragraph(f"<b>Remarks:</b> {batch['remark'] or 'N/A'}", info_style))
+        story.append(Spacer(1, 10))
+        story.append(
+            Paragraph("This certificate is electronically generated and does not require a physical signature.",
+                      styles['Italic']))
+        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Italic']))
+
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        st.error(f"Error generating COA: {str(e)}")
         return None
-    batch = batch_df.iloc[0]
-    recipe_df = get_recipe_by_id(batch['recipe_id'])
-    if recipe_df.empty:
-        return None
-    recipe = recipe_df.iloc[0]
-
-    # Prepare data for PDF table
-    params = [
-        ("TSC (%)", f"{recipe['tsc_min']:.1f} - {recipe['tsc_max']:.1f}", batch['tsc'],
-         batch['tsc_min'] <= batch['tsc'] <= batch['tsc_max']),
-        ("pH", f"{recipe['ph_min']:.1f} - {recipe['ph_max']:.1f}", batch['ph'],
-         recipe['ph_min'] <= batch['ph'] <= recipe['ph_max']),
-        ("Viscosity (cP)", f"{recipe['visc_min']:.0f} - {recipe['visc_max']:.0f}", batch['visc'],
-         recipe['visc_min'] <= batch['visc'] <= recipe['visc_max']),
-        ("DE", f"≤ {recipe['de_max']:.2f}", batch['de'], batch['de'] <= recipe['de_max']),
-        ("DL", f"± {recipe['dl_tolerance']:.2f}", batch['dl'], abs(batch['dl']) <= recipe['dl_tolerance']),
-        ("Da", f"± {recipe['da_tolerance']:.2f}", batch['da'], abs(batch['da']) <= recipe['da_tolerance']),
-        ("Db", f"± {recipe['db_tolerance']:.2f}", batch['db'], abs(batch['db']) <= recipe['db_tolerance']),
-        (
-        "Colour Strength (%)", f"{recipe['strength_min']:.0f} - {recipe['strength_max']:.0f}", batch['colour_strength'],
-        recipe['strength_min'] <= batch['colour_strength'] <= recipe['strength_max'])
-    ]
-
-    # Create PDF in memory
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
-    styles = getSampleStyleSheet()
-    story = []
-
-    # Title
-    title_style = ParagraphStyle('Title', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
-    story.append(Paragraph("CERTIFICATE OF ANALYSIS", title_style))
-
-    # Header Info
-    info_style = styles['Normal']
-    story.append(Paragraph(f"<b>Batch Number:</b> {batch['batch_number']}", info_style))
-    story.append(Paragraph(f"<b>Colour Code:</b> {batch['colour_code']} - {recipe['colour_name']}", info_style))
-    story.append(Paragraph(f"<b>Manufacturing Date:</b> {batch['manufacturing_date']}", info_style))
-    story.append(Paragraph(f"<b>Attempt Count:</b> {batch['attempt_count']}", info_style))
-    story.append(Paragraph(f"<b>Status:</b> {batch['status']}", info_style))
-    story.append(Spacer(1, 10))
-
-    # Results Table
-    table_data = [["Parameter", "Specification", "Result", "Status"]]
-    for param, spec, result, passed in params:
-        status_text = "✅ PASS" if passed else "❌ FAIL"
-        table_data.append([param, spec, f"{result:.2f}", status_text])
-
-    t = Table(table_data, colWidths=[80, 100, 80, 80])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    story.append(t)
-
-    # Footer / Remarks
-    story.append(Spacer(1, 20))
-    story.append(Paragraph(f"<b>Remarks:</b> {batch['remark'] or 'N/A'}", info_style))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("This certificate is electronically generated and does not require a physical signature.",
-                           styles['Italic']))
-    story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Italic']))
-
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
 
 
 # ---------- INIT DB ----------
@@ -427,7 +428,7 @@ if is_admin():
 elif is_qa():
     tab_index = 0
 else:
-    tab_index = -1  # Production doesn't see this
+    tab_index = -1
 
 if is_admin() or is_qa():
     current_tab = tabs[tab_index]
@@ -468,12 +469,8 @@ if is_admin() or is_qa():
             st.info("No batches waiting for QA.")
 
 # ---------- WIP PROGRESS (ALL ROLES) ----------
-# This tab is always present. Find its position.
-for i, tab_name in enumerate(tabs_list):
-    if tab_name == "WIP Progress":
-        wip_index = i
-        break
-
+# Find the WIP tab index
+wip_index = next(i for i, name in enumerate(tabs_list) if name == "WIP Progress")
 with tabs[wip_index]:
     st.header("📋 4. Live WIP Progress")
     df_all = get_batches()
@@ -526,12 +523,7 @@ with tabs[wip_index]:
                     st.write("(Read Only)")
 
 # ---------- 📊 REPORTS TAB (ALL ROLES) ----------
-# Find the reports tab index
-for i, tab_name in enumerate(tabs_list):
-    if tab_name == "📊 Reports":
-        report_index = i
-        break
-
+report_index = next(i for i, name in enumerate(tabs_list) if name == "📊 Reports")
 with tabs[report_index]:
     st.header("📊 Reports & Analytics")
 
@@ -639,7 +631,7 @@ with tabs[report_index]:
                     )
                     st.success("✅ COA generated successfully! Click the download button above.")
                 else:
-                    st.error("❌ Failed to generate COA. Missing recipe data.")
+                    st.error("❌ Failed to generate COA. Please check that the batch has all required data.")
 
     # ---------- SUB TAB 3: DATA EXPORT ----------
     with report_tabs[2]:
