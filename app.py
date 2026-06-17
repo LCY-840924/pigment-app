@@ -50,13 +50,13 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )''')
 
-    # Sequence counter (not used, but kept for compatibility)
+    # Sequence counter (not used but kept for compatibility)
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY,
                     last_seq INTEGER DEFAULT 0
                 )''')
 
-    # --- MIGRATE: Add new columns if missing ---
+    # --- Migrate: add missing columns if any ---
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -80,7 +80,7 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # --- FIX NULL VALUES for existing recipes (Prevents the TypeError) ---
+    # --- Set default values for existing rows to avoid NULL errors ---
     c.execute("UPDATE recipes SET tsc_min = COALESCE(tsc_min, 40.0)")
     c.execute("UPDATE recipes SET tsc_max = COALESCE(tsc_max, 50.0)")
     c.execute("UPDATE recipes SET ph_min = COALESCE(ph_min, 7.5)")
@@ -263,34 +263,56 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+
+    # ---------- ISSUE NEW BATCH (with filter) ----------
     st.header("📄 2. Issue New Batch")
     recipes = get_recipes()
     if recipes.empty:
         st.warning("No recipes. Please add a recipe first.")
     else:
-        sorted_recipes = recipes.sort_values('colour_code')
-        recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['recipe_id'] for _, row in
-                          sorted_recipes.iterrows()}
+        # 1. Colour Code filter
+        unique_colours = recipes['colour_code'].unique().tolist()
+        colour_filter = st.selectbox(
+            "Filter by Colour Code",
+            ["All"] + sorted(unique_colours)
+        )
 
-        selected = st.selectbox("Select Recipe (sorted by Colour Code)", list(recipe_options.keys()))
-        recipe_id = recipe_options[selected]
-        colour_code = selected.split(" - ")[0]
+        # 2. Filter recipes
+        if colour_filter != "All":
+            filtered_recipes = recipes[recipes['colour_code'] == colour_filter]
+        else:
+            filtered_recipes = recipes
 
-        batch_number = st.text_input("Batch Number (e.g., RED-0001, 2026-001)")
-        manufacturing_date = st.date_input("Manufacturing Date", datetime.now())
-        manufacturing_date_str = manufacturing_date.strftime("%Y-%m-%d")
+        if filtered_recipes.empty:
+            st.warning(f"No recipes found for Colour Code: {colour_filter}")
+        else:
+            sorted_recipes = filtered_recipes.sort_values('colour_code')
+            recipe_options = {
+                f"{row['colour_code']} - {row['colour_name']}": row['recipe_id']
+                for _, row in sorted_recipes.iterrows()
+            }
 
-        if st.button("▶ Issue Batch", type="primary"):
-            if not batch_number:
-                st.error("❌ Please enter a Batch Number.")
-            elif batch_exists(batch_number):
-                st.error(f"❌ Batch Number '{batch_number}' already exists. Please use a unique number.")
-            else:
-                add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
-                st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
-                st.rerun()
+            selected = st.selectbox("Select Recipe", list(recipe_options.keys()))
+            recipe_id = recipe_options[selected]
+            colour_code = selected.split(" - ")[0]
+
+            batch_number = st.text_input("Batch Number (e.g., RED-0001, 2026-001)")
+            manufacturing_date = st.date_input("Manufacturing Date", datetime.now())
+            manufacturing_date_str = manufacturing_date.strftime("%Y-%m-%d")
+
+            if st.button("▶ Issue Batch", type="primary"):
+                if not batch_number:
+                    st.error("❌ Please enter a Batch Number.")
+                elif batch_exists(batch_number):
+                    st.error(f"❌ Batch Number '{batch_number}' already exists. Please use a unique number.")
+                else:
+                    add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
+                    st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
+                    st.rerun()
 
     st.divider()
+
+    # ---------- QA TESTING ----------
     st.header("🔬 3. QA Testing")
     df_batches = get_batches()
     pending = df_batches[df_batches['status'] == 'QA_Pending']
@@ -326,7 +348,7 @@ with st.sidebar:
     else:
         st.info("No batches waiting for QA.")
 
-# ---------- MAIN TABLE ----------
+# ---------- MAIN TABLE (WIP) ----------
 st.header("📋 4. Live WIP Progress")
 
 df_all = get_batches()
