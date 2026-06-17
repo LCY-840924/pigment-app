@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+from datetime import datetime
 
 
 # ---------- DATABASE SETUP ----------
@@ -8,7 +9,7 @@ def init_db():
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
-    # Recipes table - NEW SCHEMA with Ranges and Colouristic specs
+    # Recipes table
     c.execute('''CREATE TABLE IF NOT EXISTS recipes (
                     recipe_id TEXT PRIMARY KEY,
                     colour_code TEXT UNIQUE,
@@ -27,7 +28,7 @@ def init_db():
                     strength_max REAL DEFAULT 105.0
                 )''')
 
-    # Batches table (unchanged)
+    # Batches table - ADDED: manufacturing_date, attempt_count, remark
     c.execute('''CREATE TABLE IF NOT EXISTS batches (
                     batch_id TEXT PRIMARY KEY,
                     batch_number TEXT UNIQUE,
@@ -43,10 +44,13 @@ def init_db():
                     da REAL,
                     db REAL,
                     colour_strength REAL,
+                    manufacturing_date TEXT,
+                    attempt_count INTEGER DEFAULT 0,
+                    remark TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )''')
 
-    # Sequence counter
+    # Sequence counter (no longer used for auto-generation, but kept for compatibility)
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY,
                     last_seq INTEGER DEFAULT 0
@@ -64,6 +68,17 @@ def init_db():
             c.execute(f"ALTER TABLE batches ADD COLUMN {col} REAL")
         except sqlite3.OperationalError:
             pass
+
+    for col in ['manufacturing_date', 'remark']:
+        try:
+            c.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+    try:
+        c.execute("ALTER TABLE batches ADD COLUMN attempt_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -83,20 +98,22 @@ def get_batches():
     return df
 
 
-def get_next_seq(colour_code):
+def recipe_exists(colour_code):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
-    c.execute("SELECT last_seq FROM seq_counter WHERE colour_code = ?", (colour_code,))
-    row = c.fetchone()
-    if row:
-        next_seq = row[0] + 1
-        c.execute("UPDATE seq_counter SET last_seq = ? WHERE colour_code = ?", (next_seq, colour_code))
-    else:
-        next_seq = 1
-        c.execute("INSERT INTO seq_counter (colour_code, last_seq) VALUES (?, ?)", (colour_code, next_seq))
-    conn.commit()
+    c.execute("SELECT 1 FROM recipes WHERE colour_code = ?", (colour_code,))
+    exists = c.fetchone() is not None
     conn.close()
-    return next_seq
+    return exists
+
+
+def batch_exists(batch_number):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM batches WHERE batch_number = ?", (batch_number,))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
 
 
 def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
@@ -115,15 +132,13 @@ def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_
     conn.close()
 
 
-def add_batch(recipe_id, colour_code):
+def add_batch(batch_number, recipe_id, colour_code, manufacturing_date):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
-    seq = get_next_seq(colour_code)
-    batch_number = f"{colour_code}-{seq:08d}"
-    batch_id = f"b_{colour_code}_{seq:08d}"
+    batch_id = f"b_{batch_number}"
     c.execute(
-        "INSERT INTO batches (batch_id, batch_number, recipe_id, colour_code, status, stage) VALUES (?,?,?,?,?,?)",
-        (batch_id, batch_number, recipe_id, colour_code, 'Issued', 'Mixing'))
+        "INSERT INTO batches (batch_id, batch_number, recipe_id, colour_code, status, stage, manufacturing_date) VALUES (?,?,?,?,?,?,?)",
+        (batch_id, batch_number, recipe_id, colour_code, 'Issued', 'Mixing', manufacturing_date))
     conn.commit()
     conn.close()
     return batch_number
@@ -137,7 +152,7 @@ def update_status(batch_id, status, stage):
     conn.close()
 
 
-def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
+def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
@@ -167,6 +182,11 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
 
     passed = all([tsc_ok, ph_ok, visc_ok, de_ok, dl_ok, da_ok, db_ok, strength_ok])
 
+    # Increment attempt count
+    c.execute("SELECT attempt_count FROM batches WHERE batch_id = ?", (batch_id,))
+    current_attempt = c.fetchone()[0] or 0
+    new_attempt = current_attempt + 1
+
     if passed:
         status, stage, msg = 'QA_Passed', 'Finished', '✅ QA PASSED! Ready to Complete.'
     else:
@@ -174,9 +194,10 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
 
     c.execute("""
         UPDATE batches 
-        SET tsc=?, ph=?, visc=?, de=?, dl=?, da=?, db=?, colour_strength=?, status=?, stage=? 
+        SET tsc=?, ph=?, visc=?, de=?, dl=?, da=?, db=?, colour_strength=?, 
+            status=?, stage=?, attempt_count=?, remark=? 
         WHERE batch_id=?
-    """, (tsc, ph, visc, de, dl, da, db, colour_strength, status, stage, batch_id))
+    """, (tsc, ph, visc, de, dl, da, db, colour_strength, status, stage, new_attempt, remark, batch_id))
 
     conn.commit()
     conn.close()
@@ -194,7 +215,7 @@ st.title("🎨 Pigment Dispersion System")
 with st.sidebar:
     st.header("📄 1. Define Recipe (Colour)")
     with st.form("recipe_form"):
-        col_code = st.text_input("Colour Code (e.g., RED)", max_chars=5).upper()
+        col_code = st.text_input("Colour Code (e.g., RED, PIG-001)")  # No max chars limit
         col_name = st.text_input("Colour Name", "Red Oxide")
 
         st.subheader("📊 Basic QC Specs (Ranges)")
@@ -222,6 +243,8 @@ with st.sidebar:
 
         submitted = st.form_submit_button("Save Recipe")
         if submitted and col_code:
+            if recipe_exists(col_code):
+                st.warning(f"⚠️ Recipe for {col_code} already exists. Updating it.")
             add_recipe(col_code, col_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
                        de_max, dl_tol, da_tol, db_tol, str_min, str_max)
             st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
@@ -233,15 +256,31 @@ with st.sidebar:
     if recipes.empty:
         st.warning("No recipes. Please add a recipe first.")
     else:
+        # Sort recipes by colour_code for the dropdown
+        sorted_recipes = recipes.sort_values('colour_code')
         recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['recipe_id'] for _, row in
-                          recipes.iterrows()}
-        selected = st.selectbox("Select Recipe", list(recipe_options.keys()))
+                          sorted_recipes.iterrows()}
+
+        selected = st.selectbox("Select Recipe (sorted by Colour Code)", list(recipe_options.keys()))
         recipe_id = recipe_options[selected]
         colour_code = selected.split(" - ")[0]
+
+        # Manual Batch Number input
+        batch_number = st.text_input("Batch Number (e.g., RED-0001, 2026-001)")
+
+        # Manufacturing Date
+        manufacturing_date = st.date_input("Manufacturing Date", datetime.now())
+        manufacturing_date_str = manufacturing_date.strftime("%Y-%m-%d")
+
         if st.button("▶ Issue Batch", type="primary"):
-            batch_num = add_batch(recipe_id, colour_code)
-            st.toast(f"✅ Batch {batch_num} issued!", icon="✅")
-            st.rerun()
+            if not batch_number:
+                st.error("❌ Please enter a Batch Number.")
+            elif batch_exists(batch_number):
+                st.error(f"❌ Batch Number '{batch_number}' already exists. Please use a unique number.")
+            else:
+                add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
+                st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
+                st.rerun()
 
     st.divider()
     st.header("🔬 3. QA Testing")
@@ -266,10 +305,17 @@ with st.sidebar:
             db = st.number_input("Db", value=0.0, step=0.01)
             colour_strength = st.number_input("Colour Strength (%)", value=100.0, step=0.1)
 
+        # Remark field for traceability
+        remark = st.text_area("Remark (e.g., adjustments made, issues found)",
+                              placeholder="Add any comments for this QA test...")
+
         if st.button("Submit QA", type="primary"):
-            msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength)
-            st.toast(msg, icon="🔬")
-            st.rerun()
+            if not remark:
+                st.warning("⚠️ Please add a remark for traceability.")
+            else:
+                msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark)
+                st.toast(msg, icon="🔬")
+                st.rerun()
     else:
         st.info("No batches waiting for QA.")
 
@@ -282,15 +328,18 @@ active = df_all[df_all['status'] != 'Completed']
 if active.empty:
     st.info("No active batches. Issue one from the sidebar.")
 else:
+    # Display all columns including attempt_count, remark, manufacturing_date
+    display_cols = ['batch_number', 'colour_code', 'stage', 'status', 'attempt_count', 'manufacturing_date',
+                    'tsc', 'ph', 'visc', 'de', 'dl', 'da', 'db', 'colour_strength', 'remark']
+
     st.dataframe(
-        active[['batch_number', 'colour_code', 'stage', 'status', 'tsc', 'ph', 'visc', 'de', 'dl', 'da', 'db',
-                'colour_strength']],
+        active[display_cols],
         use_container_width=True
     )
 
     st.subheader("⚡ Actions")
     for _, row in active.iterrows():
-        col1, col2, col3, col4 = st.columns([1, 1, 2, 2])
+        col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 2, 2])
         with col1:
             st.write(f"**{row['batch_number']}**")
         with col2:
@@ -298,6 +347,8 @@ else:
         with col3:
             st.write(row['status'])
         with col4:
+            st.write(f"Attempt: {row['attempt_count'] or 0}")
+        with col5:
             batch_id = row['batch_id']
             if row['status'] == 'Issued':
                 if st.button(f"▶ Mix", key=f"mix_{batch_id}"):
@@ -322,4 +373,5 @@ else:
             else:
                 st.write("⏳")
 
-st.caption("💡 TSC, pH, Viscosity are checked against Min/Max ranges. DE is part of Colouristic Properties (≤ Max).")
+st.caption(
+    "💡 Batch numbers are now manually entered. QA attempts are auto-counted. Remarks are stored for traceability.")
