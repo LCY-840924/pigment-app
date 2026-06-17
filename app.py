@@ -5,7 +5,6 @@ from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
-import base64
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm, inch
@@ -95,11 +94,10 @@ def get_completed_batches():
     return df
 
 
-# REMOVED get_batch_by_number – we will filter within the COA function
-
 def get_recipe_by_id(recipe_id):
     conn = sqlite3.connect('pigment.db')
-    df = pd.read_sql_query("SELECT * FROM recipes WHERE recipe_id = ?", (recipe_id,), conn)
+    # FIX: use params keyword to avoid tuple-as-connection error
+    df = pd.read_sql_query("SELECT * FROM recipes WHERE recipe_id = ?", conn, params=(recipe_id,))
     conn.close()
     return df
 
@@ -122,6 +120,24 @@ def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_
                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (colour_code, colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max, de_max,
                dl_tol, da_tol, db_tol, str_min, str_max))
+    conn.commit()
+    conn.close()
+
+
+def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max, de_max, dl_tol, da_tol,
+                  db_tol, str_min, str_max):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("""UPDATE recipes SET colour_name=?, tsc_min=?, tsc_max=?, ph_min=?, ph_max=?, visc_min=?, visc_max=?, de_max=?, dl_tolerance=?, da_tolerance=?, db_tolerance=?, strength_min=?, strength_max=? WHERE recipe_id=?""",
+              (colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max, recipe_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_recipe(recipe_id):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM recipes WHERE recipe_id = ?", (recipe_id,))
     conn.commit()
     conn.close()
 
@@ -185,7 +201,6 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
 # ---------- REPORT FUNCTIONS ----------
 def generate_coa_pdf(batch_number):
     try:
-        # Fetch batch data using get_batches and filter
         all_batches = get_batches()
         batch_df = all_batches[all_batches['batch_number'] == batch_number]
         if batch_df.empty:
@@ -197,7 +212,6 @@ def generate_coa_pdf(batch_number):
             return None
         recipe = recipe_df.iloc[0]
 
-        # Prepare data for PDF table
         params = [
             ("TSC (%)", f"{recipe['tsc_min']:.1f} - {recipe['tsc_max']:.1f}", batch['tsc'],
              recipe['tsc_min'] <= batch['tsc'] <= recipe['tsc_max']),
@@ -213,17 +227,14 @@ def generate_coa_pdf(batch_number):
              batch['colour_strength'], recipe['strength_min'] <= batch['colour_strength'] <= recipe['strength_max'])
         ]
 
-        # Create PDF in memory
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         story = []
 
-        # Title
         title_style = ParagraphStyle('Title', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
         story.append(Paragraph("CERTIFICATE OF ANALYSIS", title_style))
 
-        # Header Info
         info_style = styles['Normal']
         story.append(Paragraph(f"<b>Batch Number:</b> {batch['batch_number']}", info_style))
         story.append(Paragraph(f"<b>Colour Code:</b> {batch['colour_code']} - {recipe['colour_name']}", info_style))
@@ -232,7 +243,6 @@ def generate_coa_pdf(batch_number):
         story.append(Paragraph(f"<b>Status:</b> {batch['status']}", info_style))
         story.append(Spacer(1, 10))
 
-        # Results Table
         table_data = [["Parameter", "Specification", "Result", "Status"]]
         for param, spec, result, passed in params:
             status_text = "✅ PASS" if passed else "❌ FAIL"
@@ -252,7 +262,6 @@ def generate_coa_pdf(batch_number):
         ]))
         story.append(t)
 
-        # Footer / Remarks
         story.append(Spacer(1, 20))
         story.append(Paragraph(f"<b>Remarks:</b> {batch['remark'] or 'N/A'}", info_style))
         story.append(Spacer(1, 10))
@@ -307,11 +316,9 @@ def login():
             st.rerun()
 
 
-# ---------- RUN LOGIN CHECK ----------
 login()
 
 
-# ---------- ROLE-BASED ACCESS CHECK ----------
 def is_admin():
     return st.session_state.role == "Admin"
 
@@ -327,7 +334,6 @@ def is_qa():
 # ---------- MAIN APP ----------
 st.title("🎨 Pigment Dispersion System")
 
-# Dynamic Tabs based on Role
 tabs_list = []
 if is_admin():
     tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports"]
@@ -375,6 +381,59 @@ if is_admin():
                     st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
                     st.rerun()
 
+        # ---- Recipe List with CRUD ----
+        st.subheader("📋 Existing Recipes")
+        recipes_df = get_recipes()
+        if not recipes_df.empty:
+            st.dataframe(recipes_df, use_container_width=True)
+
+            # Export CSV
+            csv = recipes_df.to_csv(index=False)
+            st.download_button(
+                label="⬇ Export Recipes as CSV",
+                data=csv,
+                file_name="recipes.csv",
+                mime="text/csv"
+            )
+
+            # Edit / Delete
+            st.subheader("✏️ Edit or Delete Recipe")
+            selected_recipe = st.selectbox("Select Recipe to Edit/Delete", recipes_df['colour_code'].tolist())
+            if selected_recipe:
+                recipe_row = recipes_df[recipes_df['colour_code'] == selected_recipe].iloc[0]
+                with st.expander(f"Edit {selected_recipe}"):
+                    with st.form("edit_recipe_form"):
+                        edit_colour_name = st.text_input("Colour Name", value=recipe_row['colour_name'])
+                        edit_tsc_min = st.number_input("TSC Min", value=recipe_row['tsc_min'], step=0.1)
+                        edit_tsc_max = st.number_input("TSC Max", value=recipe_row['tsc_max'], step=0.1)
+                        edit_ph_min = st.number_input("pH Min", value=recipe_row['ph_min'], step=0.1)
+                        edit_ph_max = st.number_input("pH Max", value=recipe_row['ph_max'], step=0.1)
+                        edit_visc_min = st.number_input("Viscosity Min", value=recipe_row['visc_min'], step=10)
+                        edit_visc_max = st.number_input("Viscosity Max", value=recipe_row['visc_max'], step=10)
+                        edit_de_max = st.number_input("DE Max", value=recipe_row['de_max'], step=0.01)
+                        edit_dl_tol = st.number_input("DL Tolerance", value=recipe_row['dl_tolerance'], step=0.1)
+                        edit_da_tol = st.number_input("Da Tolerance", value=recipe_row['da_tolerance'], step=0.1)
+                        edit_db_tol = st.number_input("Db Tolerance", value=recipe_row['db_tolerance'], step=0.1)
+                        edit_str_min = st.number_input("Strength Min", value=recipe_row['strength_min'], step=1.0)
+                        edit_str_max = st.number_input("Strength Max", value=recipe_row['strength_max'], step=1.0)
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("Update Recipe"):
+                                update_recipe(selected_recipe, edit_colour_name, edit_tsc_min, edit_tsc_max,
+                                              edit_ph_min, edit_ph_max, edit_visc_min, edit_visc_max,
+                                              edit_de_max, edit_dl_tol, edit_da_tol, edit_db_tol,
+                                              edit_str_min, edit_str_max)
+                                st.toast(f"✅ Recipe {selected_recipe} updated!", icon="✅")
+                                st.rerun()
+                        with col2:
+                            if st.form_submit_button("Delete Recipe", type="primary"):
+                                delete_recipe(selected_recipe)
+                                st.toast(f"🗑️ Recipe {selected_recipe} deleted!", icon="🗑️")
+                                st.rerun()
+        else:
+            st.info("No recipes defined yet.")
+
 # ---------- TAB 2 / 3: ISSUE BATCH (ADMIN & PRODUCTION) ----------
 tab_index = 0
 if is_admin():
@@ -390,8 +449,37 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
+            # ---- QR Scan / Manual Input ----
+            st.subheader("📷 QR Code Input (optional)")
+            qr_input = st.text_input("Paste QR code content (format: recipeName_batchNumber)", placeholder="e.g. RED_2026-001")
+            if qr_input:
+                try:
+                    parts = qr_input.split('_', 1)
+                    if len(parts) == 2:
+                        qr_recipe, qr_batch = parts[0], parts[1]
+                        # Check if recipe exists
+                        matching_recipes = recipes[recipes['colour_code'] == qr_recipe]
+                        if not matching_recipes.empty:
+                            # Auto-select recipe
+                            st.session_state['qr_recipe'] = qr_recipe
+                            st.session_state['qr_batch'] = qr_batch
+                            st.success(f"✅ Recognised: Recipe '{qr_recipe}', Batch '{qr_batch}'")
+                        else:
+                            st.error(f"❌ Recipe '{qr_recipe}' not found.")
+                    else:
+                        st.error("❌ Invalid QR format. Use 'recipeName_batchNumber'")
+                except Exception as e:
+                    st.error(f"❌ Error parsing QR: {e}")
+
             unique_colours = recipes['colour_code'].unique().tolist()
-            colour_filter = st.selectbox("Filter by Colour Code", ["All"] + sorted(unique_colours))
+            # Set default from QR if available
+            default_recipe = st.session_state.get('qr_recipe', None)
+            if default_recipe and default_recipe in unique_colours:
+                default_index = unique_colours.index(default_recipe)
+            else:
+                default_index = 0
+
+            colour_filter = st.selectbox("Filter by Colour Code", ["All"] + sorted(unique_colours), index=0)
 
             if colour_filter != "All":
                 filtered_recipes = recipes[recipes['colour_code'] == colour_filter]
@@ -404,11 +492,20 @@ if is_admin() or is_production():
                 sorted_recipes = filtered_recipes.sort_values('colour_code')
                 recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['recipe_id'] for _, row in
                                   sorted_recipes.iterrows()}
-                selected = st.selectbox("Select Recipe", list(recipe_options.keys()))
+                # Set default selected if QR match
+                default_selected = None
+                if default_recipe:
+                    for key, val in recipe_options.items():
+                        if key.startswith(default_recipe):
+                            default_selected = key
+                            break
+                selected = st.selectbox("Select Recipe", list(recipe_options.keys()), index=list(recipe_options.keys()).index(default_selected) if default_selected else 0)
                 recipe_id = recipe_options[selected]
                 colour_code = selected.split(" - ")[0]
 
-                batch_number = st.text_input("Batch Number (e.g., RED-0001, 2026-001)")
+                # Batch number: allow QR batch or manual
+                default_batch = st.session_state.get('qr_batch', '')
+                batch_number = st.text_input("Batch Number (e.g., RED-0001, 2026-001)", value=default_batch)
                 manufacturing_date = st.date_input("Manufacturing Date", datetime.now())
                 manufacturing_date_str = manufacturing_date.strftime("%Y-%m-%d")
 
@@ -469,7 +566,6 @@ if is_admin() or is_qa():
             st.info("No batches waiting for QA.")
 
 # ---------- WIP PROGRESS (ALL ROLES) ----------
-# Find the WIP tab index
 wip_index = next(i for i, name in enumerate(tabs_list) if name == "WIP Progress")
 with tabs[wip_index]:
     st.header("📋 4. Live WIP Progress")
@@ -527,7 +623,6 @@ report_index = next(i for i, name in enumerate(tabs_list) if name == "📊 Repor
 with tabs[report_index]:
     st.header("📊 Reports & Analytics")
 
-    # Sub tabs for Reports
     report_tabs = st.tabs(["📈 SPC Charts", "📄 COA Generation", "📥 Data Export"])
 
     # ---------- SUB TAB 1: SPC CHARTS ----------
@@ -538,7 +633,6 @@ with tabs[report_index]:
         if completed_df.empty:
             st.info("No completed batches available for SPC analysis.")
         else:
-            # Filter by Colour Code
             colours = completed_df['colour_code'].unique().tolist()
             selected_colour = st.selectbox("Select Colour Code for SPC", sorted(colours))
 
@@ -547,7 +641,6 @@ with tabs[report_index]:
             if filtered_df.empty:
                 st.warning(f"No completed batches for {selected_colour}")
             else:
-                # Get recipe specs for this colour
                 recipe_df = get_recipes()
                 recipe = recipe_df[recipe_df['colour_code'] == selected_colour]
                 if not recipe.empty:
@@ -565,11 +658,9 @@ with tabs[report_index]:
                 else:
                     specs = None
 
-                # Create subplots (2 columns, 4 rows)
                 params = ['tsc', 'ph', 'visc', 'de', 'dl', 'da', 'db', 'colour_strength']
                 param_labels = ['TSC (%)', 'pH', 'Viscosity (cP)', 'DE', 'DL', 'Da', 'Db', 'Colour Strength (%)']
 
-                # Sort by batch number or date for X-axis
                 filtered_df = filtered_df.sort_values('created_at')
                 x_vals = filtered_df['batch_number'].tolist()
 
@@ -589,13 +680,11 @@ with tabs[report_index]:
                         marker=dict(size=6)
                     ), row=row_idx, col=col_idx)
 
-                    # Add UCL and LCL lines if specs exist
                     if specs:
                         lower, upper = specs[param]
                         fig.add_hline(y=upper, line_dash="dash", line_color="red", row=row_idx, col=col_idx)
                         fig.add_hline(y=lower, line_dash="dash", line_color="red", row=row_idx, col=col_idx)
 
-                    # Move to next subplot
                     if col_idx == 2:
                         row_idx += 1
                         col_idx = 1
@@ -614,7 +703,6 @@ with tabs[report_index]:
         if completed_list.empty:
             st.info("No completed batches available for COA generation.")
         else:
-            # Dropdown to select batch
             batch_options = {f"{row['batch_number']} ({row['colour_code']})": row['batch_number'] for _, row in
                              completed_list.iterrows()}
             selected_batch = st.selectbox("Select Batch for COA", list(batch_options.keys()))
@@ -641,10 +729,8 @@ with tabs[report_index]:
         if completed_data.empty:
             st.info("No completed batches to export.")
         else:
-            # Preview
             st.dataframe(completed_data, use_container_width=True)
 
-            # Export button
             csv = completed_data.to_csv(index=False)
             st.download_button(
                 label="⬇ Download CSV",
