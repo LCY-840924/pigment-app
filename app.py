@@ -2,9 +2,18 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import io
+import base64
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm, inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
-# ---------- USER CREDENTIALS (Hardcoded for demo - Use Secrets in production) ----------
-# To use Streamlit Secrets, replace this with: CREDENTIALS = st.secrets["users"]
+# ---------- USER CREDENTIALS ----------
 CREDENTIALS = {
     "admin": {"password": "admin123", "role": "Admin"},
     "production": {"password": "prod123", "role": "Production"},
@@ -38,7 +47,6 @@ def init_db():
                     colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
                 )''')
 
-    # Migration for existing columns
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -59,7 +67,6 @@ def init_db():
     except:
         pass
 
-    # Set defaults to prevent NULL errors
     c.execute(
         "UPDATE recipes SET tsc_min = COALESCE(tsc_min, 40.0), tsc_max = COALESCE(tsc_max, 50.0), ph_min = COALESCE(ph_min, 7.5), ph_max = COALESCE(ph_max, 9.5), visc_min = COALESCE(visc_min, 1000.0), visc_max = COALESCE(visc_max, 1400.0), de_max = COALESCE(de_max, 1.0), dl_tolerance = COALESCE(dl_tolerance, 0.5), da_tolerance = COALESCE(da_tolerance, 0.6), db_tolerance = COALESCE(db_tolerance, 0.6), strength_min = COALESCE(strength_min, 95.0), strength_max = COALESCE(strength_max, 105.0)")
     conn.commit()
@@ -77,6 +84,27 @@ def get_recipes():
 def get_batches():
     conn = sqlite3.connect('pigment.db')
     df = pd.read_sql_query("SELECT * FROM batches ORDER BY created_at DESC", conn)
+    conn.close()
+    return df
+
+
+def get_completed_batches():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM batches WHERE status = 'Completed' ORDER BY created_at DESC", conn)
+    conn.close()
+    return df
+
+
+def get_batch_by_number(batch_number):
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM batches WHERE batch_number = ?", (batch_number,), conn)
+    conn.close()
+    return df
+
+
+def get_recipe_by_id(recipe_id):
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM recipes WHERE recipe_id = ?", (recipe_id,), conn)
     conn.close()
     return df
 
@@ -159,6 +187,87 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
     return msg
 
 
+# ---------- REPORT FUNCTIONS ----------
+def generate_coa_pdf(batch_number):
+    # Fetch batch and recipe data
+    batch_df = get_batch_by_number(batch_number)
+    if batch_df.empty:
+        return None
+    batch = batch_df.iloc[0]
+    recipe_df = get_recipe_by_id(batch['recipe_id'])
+    if recipe_df.empty:
+        return None
+    recipe = recipe_df.iloc[0]
+
+    # Prepare data for PDF table
+    params = [
+        ("TSC (%)", f"{recipe['tsc_min']:.1f} - {recipe['tsc_max']:.1f}", batch['tsc'],
+         batch['tsc_min'] <= batch['tsc'] <= batch['tsc_max']),
+        ("pH", f"{recipe['ph_min']:.1f} - {recipe['ph_max']:.1f}", batch['ph'],
+         recipe['ph_min'] <= batch['ph'] <= recipe['ph_max']),
+        ("Viscosity (cP)", f"{recipe['visc_min']:.0f} - {recipe['visc_max']:.0f}", batch['visc'],
+         recipe['visc_min'] <= batch['visc'] <= recipe['visc_max']),
+        ("DE", f"≤ {recipe['de_max']:.2f}", batch['de'], batch['de'] <= recipe['de_max']),
+        ("DL", f"± {recipe['dl_tolerance']:.2f}", batch['dl'], abs(batch['dl']) <= recipe['dl_tolerance']),
+        ("Da", f"± {recipe['da_tolerance']:.2f}", batch['da'], abs(batch['da']) <= recipe['da_tolerance']),
+        ("Db", f"± {recipe['db_tolerance']:.2f}", batch['db'], abs(batch['db']) <= recipe['db_tolerance']),
+        (
+        "Colour Strength (%)", f"{recipe['strength_min']:.0f} - {recipe['strength_max']:.0f}", batch['colour_strength'],
+        recipe['strength_min'] <= batch['colour_strength'] <= recipe['strength_max'])
+    ]
+
+    # Create PDF in memory
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Title
+    title_style = ParagraphStyle('Title', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
+    story.append(Paragraph("CERTIFICATE OF ANALYSIS", title_style))
+
+    # Header Info
+    info_style = styles['Normal']
+    story.append(Paragraph(f"<b>Batch Number:</b> {batch['batch_number']}", info_style))
+    story.append(Paragraph(f"<b>Colour Code:</b> {batch['colour_code']} - {recipe['colour_name']}", info_style))
+    story.append(Paragraph(f"<b>Manufacturing Date:</b> {batch['manufacturing_date']}", info_style))
+    story.append(Paragraph(f"<b>Attempt Count:</b> {batch['attempt_count']}", info_style))
+    story.append(Paragraph(f"<b>Status:</b> {batch['status']}", info_style))
+    story.append(Spacer(1, 10))
+
+    # Results Table
+    table_data = [["Parameter", "Specification", "Result", "Status"]]
+    for param, spec, result, passed in params:
+        status_text = "✅ PASS" if passed else "❌ FAIL"
+        table_data.append([param, spec, f"{result:.2f}", status_text])
+
+    t = Table(table_data, colWidths=[80, 100, 80, 80])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    story.append(t)
+
+    # Footer / Remarks
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(f"<b>Remarks:</b> {batch['remark'] or 'N/A'}", info_style))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("This certificate is electronically generated and does not require a physical signature.",
+                           styles['Italic']))
+    story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Italic']))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
 # ---------- INIT DB ----------
 init_db()
 
@@ -217,26 +326,20 @@ def is_qa():
 # ---------- MAIN APP ----------
 st.title("🎨 Pigment Dispersion System")
 
-# Define Tabs conditionally based on Role
+# Dynamic Tabs based on Role
 tabs_list = []
-
-# Admin sees all 4 tabs
 if is_admin():
-    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress"]
-# Production sees Issue Batch and WIP only
+    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports"]
 elif is_production():
-    tabs_list = ["Issue Batch", "WIP Progress"]
-# QA sees QA Testing and WIP only
+    tabs_list = ["Issue Batch", "WIP Progress", "📊 Reports"]
 elif is_qa():
-    tabs_list = ["QA Testing", "WIP Progress"]
+    tabs_list = ["QA Testing", "WIP Progress", "📊 Reports"]
 
 tabs = st.tabs(tabs_list)
 
-tab_index = 0
-
 # ---------- TAB 1: DEFINE RECIPE (ADMIN ONLY) ----------
 if is_admin():
-    with tabs[tab_index]:
+    with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
         with st.form("recipe_form"):
             col_code = st.text_input("Colour Code (e.g., RED, PIG-001)")
@@ -270,9 +373,14 @@ if is_admin():
                                da_tol, db_tol, str_min, str_max)
                     st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
                     st.rerun()
-    tab_index += 1
 
-# ---------- TAB 2: ISSUE BATCH (ADMIN & PRODUCTION) ----------
+# ---------- TAB 2 / 3: ISSUE BATCH (ADMIN & PRODUCTION) ----------
+tab_index = 0
+if is_admin():
+    tab_index = 1
+else:
+    tab_index = 0
+
 if is_admin() or is_production():
     current_tab = tabs[tab_index]
     with current_tab:
@@ -312,9 +420,15 @@ if is_admin() or is_production():
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
                         st.rerun()
-    tab_index += 1
 
-# ---------- TAB 3: QA TESTING (ADMIN & QA) ----------
+# ---------- TAB 3 / 4: QA TESTING (ADMIN & QA) ----------
+if is_admin():
+    tab_index = 2
+elif is_qa():
+    tab_index = 0
+else:
+    tab_index = -1  # Production doesn't see this
+
 if is_admin() or is_qa():
     current_tab = tabs[tab_index]
     with current_tab:
@@ -352,11 +466,15 @@ if is_admin() or is_qa():
                     st.rerun()
         else:
             st.info("No batches waiting for QA.")
-    tab_index += 1
 
-# ---------- TAB 4: WIP PROGRESS (ALL ROLES) ----------
-# This is always the last tab
-with tabs[-1]:
+# ---------- WIP PROGRESS (ALL ROLES) ----------
+# This tab is always present. Find its position.
+for i, tab_name in enumerate(tabs_list):
+    if tab_name == "WIP Progress":
+        wip_index = i
+        break
+
+with tabs[wip_index]:
     st.header("📋 4. Live WIP Progress")
     df_all = get_batches()
     active = df_all[df_all['status'] != 'Completed']
@@ -381,7 +499,6 @@ with tabs[-1]:
                 st.write(f"Attempt: {row['attempt_count'] or 0}")
             with col5:
                 batch_id = row['batch_id']
-                # Only show Action Buttons for Admin and Production (QA cannot change stages via buttons)
                 if is_admin() or is_production():
                     if row['status'] == 'Issued':
                         if st.button(f"▶ Mix", key=f"mix_{batch_id}"):
@@ -406,8 +523,143 @@ with tabs[-1]:
                     else:
                         st.write("⏳")
                 else:
-                    # QA role: Read-only view in WIP
                     st.write("(Read Only)")
 
+# ---------- 📊 REPORTS TAB (ALL ROLES) ----------
+# Find the reports tab index
+for i, tab_name in enumerate(tabs_list):
+    if tab_name == "📊 Reports":
+        report_index = i
+        break
+
+with tabs[report_index]:
+    st.header("📊 Reports & Analytics")
+
+    # Sub tabs for Reports
+    report_tabs = st.tabs(["📈 SPC Charts", "📄 COA Generation", "📥 Data Export"])
+
+    # ---------- SUB TAB 1: SPC CHARTS ----------
+    with report_tabs[0]:
+        st.subheader("📈 Statistical Process Control (SPC) Charts")
+
+        completed_df = get_completed_batches()
+        if completed_df.empty:
+            st.info("No completed batches available for SPC analysis.")
+        else:
+            # Filter by Colour Code
+            colours = completed_df['colour_code'].unique().tolist()
+            selected_colour = st.selectbox("Select Colour Code for SPC", sorted(colours))
+
+            filtered_df = completed_df[completed_df['colour_code'] == selected_colour]
+
+            if filtered_df.empty:
+                st.warning(f"No completed batches for {selected_colour}")
+            else:
+                # Get recipe specs for this colour
+                recipe_df = get_recipes()
+                recipe = recipe_df[recipe_df['colour_code'] == selected_colour]
+                if not recipe.empty:
+                    r = recipe.iloc[0]
+                    specs = {
+                        'tsc': (r['tsc_min'], r['tsc_max']),
+                        'ph': (r['ph_min'], r['ph_max']),
+                        'visc': (r['visc_min'], r['visc_max']),
+                        'de': (0, r['de_max']),
+                        'dl': (-r['dl_tolerance'], r['dl_tolerance']),
+                        'da': (-r['da_tolerance'], r['da_tolerance']),
+                        'db': (-r['db_tolerance'], r['db_tolerance']),
+                        'colour_strength': (r['strength_min'], r['strength_max'])
+                    }
+                else:
+                    specs = None
+
+                # Create subplots (2 columns, 4 rows)
+                params = ['tsc', 'ph', 'visc', 'de', 'dl', 'da', 'db', 'colour_strength']
+                param_labels = ['TSC (%)', 'pH', 'Viscosity (cP)', 'DE', 'DL', 'Da', 'Db', 'Colour Strength (%)']
+
+                # Sort by batch number or date for X-axis
+                filtered_df = filtered_df.sort_values('created_at')
+                x_vals = filtered_df['batch_number'].tolist()
+
+                fig = make_subplots(rows=4, cols=2, subplot_titles=param_labels)
+
+                row_idx = 1
+                col_idx = 1
+                for i, param in enumerate(params):
+                    y_vals = filtered_df[param].tolist()
+
+                    fig.add_trace(go.Scatter(
+                        x=x_vals,
+                        y=y_vals,
+                        mode='lines+markers',
+                        name=param_labels[i],
+                        line=dict(color='blue'),
+                        marker=dict(size=6)
+                    ), row=row_idx, col=col_idx)
+
+                    # Add UCL and LCL lines if specs exist
+                    if specs:
+                        lower, upper = specs[param]
+                        fig.add_hline(y=upper, line_dash="dash", line_color="red", row=row_idx, col=col_idx)
+                        fig.add_hline(y=lower, line_dash="dash", line_color="red", row=row_idx, col=col_idx)
+
+                    # Move to next subplot
+                    if col_idx == 2:
+                        row_idx += 1
+                        col_idx = 1
+                    else:
+                        col_idx += 1
+
+                fig.update_layout(height=1000, showlegend=False, title_text=f"SPC Chart: {selected_colour}")
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ---------- SUB TAB 2: COA GENERATION ----------
+    with report_tabs[1]:
+        st.subheader("📄 Certificate of Analysis (COA) - PDF")
+
+        completed_list = get_completed_batches()
+        if completed_list.empty:
+            st.info("No completed batches available for COA generation.")
+        else:
+            # Dropdown to select batch
+            batch_options = {f"{row['batch_number']} ({row['colour_code']})": row['batch_number'] for _, row in
+                             completed_list.iterrows()}
+            selected_batch = st.selectbox("Select Batch for COA", list(batch_options.keys()))
+            batch_num = batch_options[selected_batch]
+
+            if st.button("📑 Generate COA PDF", type="primary"):
+                pdf_buffer = generate_coa_pdf(batch_num)
+                if pdf_buffer:
+                    st.download_button(
+                        label="⬇ Download COA (PDF)",
+                        data=pdf_buffer,
+                        file_name=f"COA_{batch_num}.pdf",
+                        mime="application/pdf"
+                    )
+                    st.success("✅ COA generated successfully! Click the download button above.")
+                else:
+                    st.error("❌ Failed to generate COA. Missing recipe data.")
+
+    # ---------- SUB TAB 3: DATA EXPORT ----------
+    with report_tabs[2]:
+        st.subheader("📥 Export Completed Data to CSV")
+
+        completed_data = get_completed_batches()
+        if completed_data.empty:
+            st.info("No completed batches to export.")
+        else:
+            # Preview
+            st.dataframe(completed_data, use_container_width=True)
+
+            # Export button
+            csv = completed_data.to_csv(index=False)
+            st.download_button(
+                label="⬇ Download CSV",
+                data=csv,
+                file_name=f"completed_batches_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+
 st.caption(
-    "💡 TSC/pH/Visc are checked against Min/Max ranges. DE is part of Colouristic Properties. Attempts auto-counted.")
+    "💡 Reports are available to all roles. SPC charts show trends vs control limits. COA PDF fits a single A4 page.")
