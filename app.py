@@ -8,7 +8,7 @@ def init_db():
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
-    # Recipes table
+    # Recipes table - ADDED: dl_tol, da_tol, db_tol, strength_min, strength_max
     c.execute('''CREATE TABLE IF NOT EXISTS recipes (
                     recipe_id TEXT PRIMARY KEY,
                     colour_code TEXT UNIQUE,
@@ -16,10 +16,15 @@ def init_db():
                     target_tsc REAL,
                     target_ph REAL,
                     target_visc REAL,
-                    target_de REAL
+                    target_de REAL,
+                    dl_tolerance REAL DEFAULT 0.5,
+                    da_tolerance REAL DEFAULT 0.6,
+                    db_tolerance REAL DEFAULT 0.6,
+                    strength_min REAL DEFAULT 95.0,
+                    strength_max REAL DEFAULT 105.0
                 )''')
 
-    # Batches table - ADDED: dl, da, db, colour_strength
+    # Batches table
     c.execute('''CREATE TABLE IF NOT EXISTS batches (
                     batch_id TEXT PRIMARY KEY,
                     batch_number TEXT UNIQUE,
@@ -38,29 +43,24 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )''')
 
-    # Sequence counter for batch numbers
+    # Sequence counter
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY,
                     last_seq INTEGER DEFAULT 0
                 )''')
 
-    # --- Add new columns safely if they don't exist ---
-    try:
-        c.execute("ALTER TABLE batches ADD COLUMN dl REAL")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    try:
-        c.execute("ALTER TABLE batches ADD COLUMN da REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute("ALTER TABLE batches ADD COLUMN db REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute("ALTER TABLE batches ADD COLUMN colour_strength REAL")
-    except sqlite3.OperationalError:
-        pass
+    # --- Safe column additions for old databases ---
+    for col in ['dl', 'da', 'db', 'colour_strength']:
+        try:
+            c.execute(f"ALTER TABLE batches ADD COLUMN {col} REAL")
+        except sqlite3.OperationalError:
+            pass
+
+    for col in ['dl_tolerance', 'da_tolerance', 'db_tolerance', 'strength_min', 'strength_max']:
+        try:
+            c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL DEFAULT 0.5")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
     conn.close()
@@ -96,12 +96,17 @@ def get_next_seq(colour_code):
     return next_seq
 
 
-def add_recipe(colour_code, colour_name, target_tsc, target_ph, target_visc, target_de):
+# UPDATED: Add recipe with ALL parameters
+def add_recipe(colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
+               dl_tol, da_tol, db_tol, str_min, str_max):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
-    c.execute(
-        "INSERT OR REPLACE INTO recipes (recipe_id, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de) VALUES (?,?,?,?,?,?,?)",
-        (colour_code, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de))
+    c.execute("""INSERT OR REPLACE INTO recipes 
+                 (recipe_id, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
+                  dl_tolerance, da_tolerance, db_tolerance, strength_min, strength_max) 
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (colour_code, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
+               dl_tol, da_tol, db_tol, str_min, str_max))
     conn.commit()
     conn.close()
 
@@ -110,7 +115,7 @@ def add_batch(recipe_id, colour_code):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     seq = get_next_seq(colour_code)
-    batch_number = f"{colour_code}-{seq:08d}"  # 8-digit padded number
+    batch_number = f"{colour_code}-{seq:08d}"
     batch_id = f"b_{colour_code}_{seq:08d}"
     c.execute(
         "INSERT INTO batches (batch_id, batch_number, recipe_id, colour_code, status, stage) VALUES (?,?,?,?,?,?)",
@@ -128,14 +133,14 @@ def update_status(batch_id, status, stage):
     conn.close()
 
 
-# ---------- UPDATED QA FUNCTION with new parameters ----------
+# UPDATED: Fetch ALL recipe specs for QA
 def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
-    # Get recipe targets for this batch
     c.execute("""
-        SELECT r.target_tsc, r.target_ph, r.target_visc, r.target_de 
+        SELECT r.target_tsc, r.target_ph, r.target_visc, r.target_de,
+               r.dl_tolerance, r.da_tolerance, r.db_tolerance, r.strength_min, r.strength_max
         FROM recipes r JOIN batches b ON r.recipe_id = b.recipe_id 
         WHERE b.batch_id = ?
     """, (batch_id,))
@@ -143,25 +148,17 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
     if not row:
         return "❌ Recipe not found!"
 
-    target_tsc, target_ph, target_visc, target_de = row
+    target_tsc, target_ph, target_visc, target_de, dl_tol, da_tol, db_tol, str_min, str_max = row
 
-    # ----- PASS / FAIL LOGIC (All must pass) -----
-    # 1. TSC: +/- 5%
+    # ----- PASS / FAIL LOGIC using Recipe SPECS -----
     tsc_ok = abs(tsc - target_tsc) / target_tsc <= 0.05
-    # 2. pH: +/- 0.5
     ph_ok = abs(ph - target_ph) <= 0.5
-    # 3. Viscosity: +/- 5%
     visc_ok = abs(visc - target_visc) / target_visc <= 0.05
-    # 4. DE: <= 1.0 (or target_de, but spec says <=1.0)
-    de_ok = de <= 1.0
-    # 5. DL: +/- 0.5
-    dl_ok = abs(dl) <= 0.5
-    # 6. Da: +/- 0.6
-    da_ok = abs(da) <= 0.6
-    # 7. Db: +/- 0.6
-    db_ok = abs(db) <= 0.6
-    # 8. Colour Strength: 95% - 105%
-    strength_ok = 95 <= colour_strength <= 105
+    de_ok = de <= target_de
+    dl_ok = abs(dl) <= dl_tol
+    da_ok = abs(da) <= da_tol
+    db_ok = abs(db) <= db_tol
+    strength_ok = str_min <= colour_strength <= str_max
 
     passed = all([tsc_ok, ph_ok, visc_ok, de_ok, dl_ok, da_ok, db_ok, strength_ok])
 
@@ -170,7 +167,6 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
     else:
         status, stage, msg = 'QA_Failed', 'Milling', '❌ QA FAILED! Back to Milling.'
 
-    # Update batch with ALL measured values
     c.execute("""
         UPDATE batches 
         SET tsc=?, ph=?, visc=?, de=?, dl=?, da=?, db=?, colour_strength=?, status=?, stage=? 
@@ -195,16 +191,30 @@ with st.sidebar:
     with st.form("recipe_form"):
         col_code = st.text_input("Colour Code (e.g., RED)", max_chars=5).upper()
         col_name = st.text_input("Colour Name", "Red Oxide")
+
         col1, col2 = st.columns(2)
         with col1:
             target_tsc = st.number_input("Target TSC (%)", value=45.0, step=0.1)
             target_ph = st.number_input("Target pH", value=8.5, step=0.1)
         with col2:
             target_visc = st.number_input("Target Viscosity (cP)", value=1200, step=10)
-            target_de = st.number_input("Target DE (≤1.0)", value=1.0, step=0.01, max_value=1.0)
+            target_de = st.number_input("Target DE (≤ value)", value=1.0, step=0.01)
+
+        st.divider()
+        st.subheader("🎨 Colouristic Specs")
+        col1, col2 = st.columns(2)
+        with col1:
+            dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1, format="%.2f")
+            da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1, format="%.2f")
+        with col2:
+            db_tol = st.number_input("Db Tolerance (±)", value=0.6, step=0.1, format="%.2f")
+            str_min = st.number_input("Strength Min %", value=95.0, step=1.0)
+            str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
+
         submitted = st.form_submit_button("Save Recipe")
         if submitted and col_code:
-            add_recipe(col_code, col_name, target_tsc, target_ph, target_visc, target_de)
+            add_recipe(col_code, col_name, target_tsc, target_ph, target_visc, target_de,
+                       dl_tol, da_tol, db_tol, str_min, str_max)
             st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
             st.rerun()
 
@@ -239,12 +249,12 @@ with st.sidebar:
         with col1:
             tsc = st.number_input("TSC (%)", value=45.0, step=0.1)
             ph = st.number_input("pH", value=8.5, step=0.1)
-            dl = st.number_input("DL (target 0, ±0.5)", value=0.0, step=0.01)
-            da = st.number_input("Da (target 0, ±0.6)", value=0.0, step=0.01)
+            dl = st.number_input("DL", value=0.0, step=0.01)
+            da = st.number_input("Da", value=0.0, step=0.01)
         with col2:
             visc = st.number_input("Viscosity (cP)", value=1200, step=10)
-            de = st.number_input("DE (≤1.0)", value=0.5, step=0.01, max_value=1.0)
-            db = st.number_input("Db (target 0, ±0.6)", value=0.0, step=0.01)
+            de = st.number_input("DE", value=0.5, step=0.01)
+            db = st.number_input("Db", value=0.0, step=0.01)
             colour_strength = st.number_input("Colour Strength (%)", value=100.0, step=0.1)
 
         if st.button("Submit QA", type="primary"):
@@ -254,7 +264,7 @@ with st.sidebar:
     else:
         st.info("No batches waiting for QA.")
 
-# ---------- MAIN TABLE (Updated Columns) ----------
+# ---------- MAIN TABLE ----------
 st.header("📋 4. Live WIP Progress")
 
 df_all = get_batches()
@@ -263,7 +273,6 @@ active = df_all[df_all['status'] != 'Completed']
 if active.empty:
     st.info("No active batches. Issue one from the sidebar.")
 else:
-    # Display all QA parameters including the new ones
     st.dataframe(
         active[['batch_number', 'colour_code', 'stage', 'status', 'tsc', 'ph', 'visc', 'de', 'dl', 'da', 'db',
                 'colour_strength']],
@@ -304,4 +313,4 @@ else:
             else:
                 st.write("⏳")
 
-st.caption("💡 QC Specs: TSC ±5%, pH ±0.5, Visc ±5%, DE ≤1.0, DL ±0.5, Da ±0.6, Db ±0.6, Strength 95-105%.")
+st.caption("💡 All specs (DL, Da, Db, Strength) are now defined per recipe and used for QA pass/fail.")
