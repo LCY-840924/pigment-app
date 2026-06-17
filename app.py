@@ -8,15 +8,18 @@ def init_db():
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
-    # Recipes table - ADDED: dl_tol, da_tol, db_tol, strength_min, strength_max
+    # Recipes table - NEW SCHEMA with Ranges and Colouristic specs
     c.execute('''CREATE TABLE IF NOT EXISTS recipes (
                     recipe_id TEXT PRIMARY KEY,
                     colour_code TEXT UNIQUE,
                     colour_name TEXT,
-                    target_tsc REAL,
-                    target_ph REAL,
-                    target_visc REAL,
-                    target_de REAL,
+                    tsc_min REAL,
+                    tsc_max REAL,
+                    ph_min REAL,
+                    ph_max REAL,
+                    visc_min REAL,
+                    visc_max REAL,
+                    de_max REAL,
                     dl_tolerance REAL DEFAULT 0.5,
                     da_tolerance REAL DEFAULT 0.6,
                     db_tolerance REAL DEFAULT 0.6,
@@ -24,7 +27,7 @@ def init_db():
                     strength_max REAL DEFAULT 105.0
                 )''')
 
-    # Batches table
+    # Batches table (unchanged)
     c.execute('''CREATE TABLE IF NOT EXISTS batches (
                     batch_id TEXT PRIMARY KEY,
                     batch_number TEXT UNIQUE,
@@ -49,16 +52,16 @@ def init_db():
                     last_seq INTEGER DEFAULT 0
                 )''')
 
-    # --- Safe column additions for old databases ---
-    for col in ['dl', 'da', 'db', 'colour_strength']:
+    # --- Safe migration for existing databases ---
+    for col in ['de_max', 'tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max']:
         try:
-            c.execute(f"ALTER TABLE batches ADD COLUMN {col} REAL")
+            c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
         except sqlite3.OperationalError:
             pass
 
-    for col in ['dl_tolerance', 'da_tolerance', 'db_tolerance', 'strength_min', 'strength_max']:
+    for col in ['dl', 'da', 'db', 'colour_strength']:
         try:
-            c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL DEFAULT 0.5")
+            c.execute(f"ALTER TABLE batches ADD COLUMN {col} REAL")
         except sqlite3.OperationalError:
             pass
 
@@ -96,17 +99,18 @@ def get_next_seq(colour_code):
     return next_seq
 
 
-# UPDATED: Add recipe with ALL parameters
-def add_recipe(colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
-               dl_tol, da_tol, db_tol, str_min, str_max):
+def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+               de_max, dl_tol, da_tol, db_tol, str_min, str_max):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     c.execute("""INSERT OR REPLACE INTO recipes 
-                 (recipe_id, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
-                  dl_tolerance, da_tolerance, db_tolerance, strength_min, strength_max) 
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-              (colour_code, colour_code, colour_name, target_tsc, target_ph, target_visc, target_de,
-               dl_tol, da_tol, db_tol, str_min, str_max))
+                 (recipe_id, colour_code, colour_name, 
+                  tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+                  de_max, dl_tolerance, da_tolerance, db_tolerance, strength_min, strength_max) 
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (colour_code, colour_code, colour_name,
+               tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+               de_max, dl_tol, da_tol, db_tol, str_min, str_max))
     conn.commit()
     conn.close()
 
@@ -133,14 +137,14 @@ def update_status(batch_id, status, stage):
     conn.close()
 
 
-# UPDATED: Fetch ALL recipe specs for QA
 def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
+    # Fetch all recipe specs
     c.execute("""
-        SELECT r.target_tsc, r.target_ph, r.target_visc, r.target_de,
-               r.dl_tolerance, r.da_tolerance, r.db_tolerance, r.strength_min, r.strength_max
+        SELECT tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+               de_max, dl_tolerance, da_tolerance, db_tolerance, strength_min, strength_max
         FROM recipes r JOIN batches b ON r.recipe_id = b.recipe_id 
         WHERE b.batch_id = ?
     """, (batch_id,))
@@ -148,13 +152,14 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength):
     if not row:
         return "❌ Recipe not found!"
 
-    target_tsc, target_ph, target_visc, target_de, dl_tol, da_tol, db_tol, str_min, str_max = row
+    (tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+     de_max, dl_tol, da_tol, db_tol, str_min, str_max) = row
 
-    # ----- PASS / FAIL LOGIC using Recipe SPECS -----
-    tsc_ok = abs(tsc - target_tsc) / target_tsc <= 0.05
-    ph_ok = abs(ph - target_ph) <= 0.5
-    visc_ok = abs(visc - target_visc) / target_visc <= 0.05
-    de_ok = de <= target_de
+    # ----- PASS / FAIL LOGIC using RANGES -----
+    tsc_ok = tsc_min <= tsc <= tsc_max
+    ph_ok = ph_min <= ph <= ph_max
+    visc_ok = visc_min <= visc <= visc_max
+    de_ok = de <= de_max
     dl_ok = abs(dl) <= dl_tol
     da_ok = abs(da) <= da_tol
     db_ok = abs(db) <= db_tol
@@ -192,18 +197,22 @@ with st.sidebar:
         col_code = st.text_input("Colour Code (e.g., RED)", max_chars=5).upper()
         col_name = st.text_input("Colour Name", "Red Oxide")
 
+        st.subheader("📊 Basic QC Specs (Ranges)")
         col1, col2 = st.columns(2)
         with col1:
-            target_tsc = st.number_input("Target TSC (%)", value=45.0, step=0.1)
-            target_ph = st.number_input("Target pH", value=8.5, step=0.1)
+            tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
+            ph_min = st.number_input("pH Min", value=8.0, step=0.1)
+            visc_min = st.number_input("Viscosity Min (cP)", value=1100, step=10)
         with col2:
-            target_visc = st.number_input("Target Viscosity (cP)", value=1200, step=10)
-            target_de = st.number_input("Target DE (≤ value)", value=1.0, step=0.01)
+            tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
+            ph_max = st.number_input("pH Max", value=9.0, step=0.1)
+            visc_max = st.number_input("Viscosity Max (cP)", value=1300, step=10)
 
         st.divider()
-        st.subheader("🎨 Colouristic Specs")
+        st.subheader("🎨 Colouristic Properties")
         col1, col2 = st.columns(2)
         with col1:
+            de_max = st.number_input("DE Max (≤ value)", value=1.0, step=0.01)
             dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1, format="%.2f")
             da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1, format="%.2f")
         with col2:
@@ -213,8 +222,8 @@ with st.sidebar:
 
         submitted = st.form_submit_button("Save Recipe")
         if submitted and col_code:
-            add_recipe(col_code, col_name, target_tsc, target_ph, target_visc, target_de,
-                       dl_tol, da_tol, db_tol, str_min, str_max)
+            add_recipe(col_code, col_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
+                       de_max, dl_tol, da_tol, db_tol, str_min, str_max)
             st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
             st.rerun()
 
@@ -244,7 +253,7 @@ with st.sidebar:
         selected = st.selectbox("Select Batch", list(batch_options.keys()))
         batch_id = batch_options[selected]
 
-        st.markdown("**Measured Values**")
+        st.markdown("**Enter Measured Values**")
         col1, col2 = st.columns(2)
         with col1:
             tsc = st.number_input("TSC (%)", value=45.0, step=0.1)
@@ -313,4 +322,4 @@ else:
             else:
                 st.write("⏳")
 
-st.caption("💡 All specs (DL, Da, Db, Strength) are now defined per recipe and used for QA pass/fail.")
+st.caption("💡 TSC, pH, Viscosity are checked against Min/Max ranges. DE is part of Colouristic Properties (≤ Max).")
