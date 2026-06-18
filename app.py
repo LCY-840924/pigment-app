@@ -121,7 +121,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---------- LOGGING FUNCTION ----------
+# ---------- LOGGING ----------
 def add_log(username, action, details, batch_number=None, recipe_id=None):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
@@ -340,7 +340,7 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION (EXACT MATCH TO TEMPLATE) ----------
+# ---------- COA GENERATION (EXACT MATCH) ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
     try:
         all_batches = get_batches()
@@ -415,7 +415,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         styles = getSampleStyleSheet()
         story = []
 
-        # ---- HEADER (left-aligned, company name bold) ----
+        # ---- HEADER ----
         header_bold_style = ParagraphStyle('HeaderBold', parent=styles['Normal'],
                                            fontSize=9, leading=11, alignment=0)
         header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'],
@@ -437,13 +437,13 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         story.append(Paragraph(phone_fax, header_normal_style))
         story.append(Spacer(1, 10))
 
-        # ---- TITLE (centered) ----
+        # ---- TITLE ----
         title_text = template.get('title', "PROVISIONAL CERTIFICATE OF ANALYSIS")
         title_style = ParagraphStyle('Title', parent=styles['Title'],
                                      fontSize=14, alignment=1, spaceAfter=10)
         story.append(Paragraph(title_text, title_style))
 
-        # ---- TOP TABLE (Product, Batch, Dates) ----
+        # ---- TOP TABLE ----
         top_data = [
             ["Product:", recipe['colour_name']],
             ["Batch no.:", batch['batch_number']],
@@ -466,7 +466,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         story.append(top_table)
         story.append(Spacer(1, 10))
 
-        # ---- MAIN RESULTS TABLE ----
+        # ---- MAIN TABLE ----
         data = [["PARAMETER", "SPECIFICATION", "RESULT"]]
         for param, spec, result in results:
             data.append([param, spec, result])
@@ -489,7 +489,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         story.append(main_table)
         story.append(Spacer(1, 15))
 
-        # ---- BOTTOM TABLE (Date, Prepared, Approved) ----
+        # ---- BOTTOM TABLE ----
         bottom_data = [
             ["Date:", mfg_str],
             ["Prepared by:", template.get('prepared_by', 'MOKHJY')],
@@ -581,9 +581,28 @@ if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
+        # ---- Get existing colour codes for dropdown ----
+        recipes_df = get_recipes()
+        existing_codes = recipes_df['colour_code'].unique().tolist() if not recipes_df.empty else []
+        colour_options = existing_codes + ["+ Add New Colour Code..."]
+
+        # ---- New Recipe Form ----
         with st.form("new_recipe_form"):
-            col_code = st.text_input("Colour Code (e.g., RED, PIG-001)")
-            col_name = st.text_input("Colour Name", "Red Oxide")
+            col_code = st.selectbox(
+                "Colour Code (Major Colour)",
+                options=colour_options,
+                help="Select an existing colour code or choose '+ Add New Colour Code...' to create a new one."
+            )
+            # If "Add New" selected, show text input
+            show_new_code = (col_code == "+ Add New Colour Code...")
+            if show_new_code:
+                new_col_code = st.text_input("Enter New Colour Code", value="", placeholder="e.g. RED, BLUE, GREEN")
+                # Use the new code if provided, otherwise keep empty
+                final_col_code = new_col_code.strip() if new_col_code else ""
+            else:
+                final_col_code = col_code
+
+            col_name = st.text_input("Colour Name (Recipe Name)", "Red Oxide")
 
             st.subheader("📊 Basic QC Specs (Ranges)")
             col1, col2 = st.columns(2)
@@ -608,92 +627,109 @@ if is_admin():
                 str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
 
             if st.form_submit_button("Save Recipe"):
-                if col_code:
-                    add_recipe(col_code, col_name, tsc_min, tsc_max, ph_min, ph_max,
-                               visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
-                               str_min, str_max, st.session_state.username)
-                    st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
-                    st.rerun()
+                if not final_col_code:
+                    st.error("❌ Colour Code is required.")
+                elif not col_name:
+                    st.error("❌ Colour Name is required.")
+                else:
+                    # Check if the colour code already exists (if we are adding new, it shouldn't)
+                    if final_col_code in existing_codes:
+                        st.error(f"❌ Colour Code '{final_col_code}' already exists. Please select it from the dropdown or use a different code.")
+                    else:
+                        add_recipe(final_col_code, col_name, tsc_min, tsc_max, ph_min, ph_max,
+                                   visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
+                                   str_min, str_max, st.session_state.username)
+                        st.toast(f"✅ Recipe for {final_col_code} - {col_name} saved!", icon="✅")
+                        st.rerun()
 
-        # ---- Existing Recipes (CRUD, Preview, Export) ----
+        # ---- Existing Recipes with Search and Sort ----
         st.subheader("📋 Existing Recipes")
-        recipes_df = get_recipes()
-        if not recipes_df.empty:
-            st.dataframe(recipes_df, use_container_width=True)
 
-            csv = recipes_df.to_csv(index=False)
+        # Search bar
+        search_term = st.text_input("🔍 Search by Colour Code or Name", placeholder="Type to filter...")
+        if search_term:
+            filtered_df = recipes_df[
+                recipes_df['colour_code'].str.contains(search_term, case=False) |
+                recipes_df['colour_name'].str.contains(search_term, case=False)
+            ]
+        else:
+            filtered_df = recipes_df
+
+        if filtered_df.empty:
+            st.info("No recipes match the search criteria.")
+        else:
+            # Display with sorting (clickable column headers)
+            st.dataframe(filtered_df, use_container_width=True, column_config={
+                "recipe_id": "Recipe ID",
+                "colour_code": "Colour Code",
+                "colour_name": "Colour Name",
+                "tsc_min": st.column_config.NumberColumn("TSC Min", format="%.1f"),
+                "tsc_max": st.column_config.NumberColumn("TSC Max", format="%.1f"),
+                "ph_min": st.column_config.NumberColumn("pH Min", format="%.1f"),
+                "ph_max": st.column_config.NumberColumn("pH Max", format="%.1f"),
+                "visc_min": st.column_config.NumberColumn("Visc Min", format="%.0f"),
+                "visc_max": st.column_config.NumberColumn("Visc Max", format="%.0f"),
+                "de_max": st.column_config.NumberColumn("DE Max", format="%.2f"),
+                "dl_tolerance": st.column_config.NumberColumn("DL Tol", format="%.1f"),
+                "da_tolerance": st.column_config.NumberColumn("Da Tol", format="%.1f"),
+                "db_tolerance": st.column_config.NumberColumn("Db Tol", format="%.1f"),
+                "strength_min": st.column_config.NumberColumn("Str Min", format="%.0f"),
+                "strength_max": st.column_config.NumberColumn("Str Max", format="%.0f"),
+            })
+
+            # Export CSV (filtered data)
+            csv = filtered_df.to_csv(index=False)
             st.download_button(
-                label="⬇ Export Recipes as CSV",
+                label="⬇ Export Filtered Recipes as CSV",
                 data=csv,
-                file_name="recipes.csv",
+                file_name=f"recipes_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
 
+            # ---- Edit / Delete ----
             st.subheader("✏️ Edit or Delete Recipe")
-            selected_recipe = st.selectbox("Select Recipe to Edit/Delete",
-                                           recipes_df['colour_code'].tolist())
-            if selected_recipe:
-                recipe_row = recipes_df[recipes_df['colour_code'] == selected_recipe].iloc[0]
-                with st.expander(f"Edit {selected_recipe}"):
-                    with st.form("edit_recipe_form"):
-                        edit_colour_name = st.text_input("Colour Name",
-                                                         value=recipe_row['colour_name'])
-                        edit_tsc_min = st.number_input("TSC Min",
-                                                       value=float(recipe_row['tsc_min']),
-                                                       step=0.1)
-                        edit_tsc_max = st.number_input("TSC Max",
-                                                       value=float(recipe_row['tsc_max']),
-                                                       step=0.1)
-                        edit_ph_min = st.number_input("pH Min",
-                                                      value=float(recipe_row['ph_min']),
-                                                      step=0.1)
-                        edit_ph_max = st.number_input("pH Max",
-                                                      value=float(recipe_row['ph_max']),
-                                                      step=0.1)
-                        edit_visc_min = st.number_input("Viscosity Min",
-                                                        value=float(recipe_row['visc_min']),
-                                                        step=10.0)
-                        edit_visc_max = st.number_input("Viscosity Max",
-                                                        value=float(recipe_row['visc_max']),
-                                                        step=10.0)
-                        edit_de_max = st.number_input("DE Max",
-                                                      value=float(recipe_row['de_max']),
-                                                      step=0.01)
-                        edit_dl_tol = st.number_input("DL Tolerance",
-                                                      value=float(recipe_row['dl_tolerance']),
-                                                      step=0.1)
-                        edit_da_tol = st.number_input("Da Tolerance",
-                                                      value=float(recipe_row['da_tolerance']),
-                                                      step=0.1)
-                        edit_db_tol = st.number_input("Db Tolerance",
-                                                      value=float(recipe_row['db_tolerance']),
-                                                      step=0.1)
-                        edit_str_min = st.number_input("Strength Min",
-                                                       value=float(recipe_row['strength_min']),
-                                                       step=1.0)
-                        edit_str_max = st.number_input("Strength Max",
-                                                       value=float(recipe_row['strength_max']),
-                                                       step=1.0)
+            if not filtered_df.empty:
+                selected_recipe = st.selectbox("Select Recipe to Edit/Delete", filtered_df['colour_code'].tolist())
+                if selected_recipe:
+                    recipe_row = filtered_df[filtered_df['colour_code'] == selected_recipe].iloc[0]
+                    with st.expander(f"Edit {selected_recipe}"):
+                        with st.form("edit_recipe_form"):
+                            # Edit form - Colour Code is not editable (it's the key)
+                            # Show it as disabled text
+                            st.text_input("Colour Code", value=selected_recipe, disabled=True)
+                            edit_colour_name = st.text_input("Colour Name", value=recipe_row['colour_name'])
+                            edit_tsc_min = st.number_input("TSC Min", value=float(recipe_row['tsc_min']), step=0.1)
+                            edit_tsc_max = st.number_input("TSC Max", value=float(recipe_row['tsc_max']), step=0.1)
+                            edit_ph_min = st.number_input("pH Min", value=float(recipe_row['ph_min']), step=0.1)
+                            edit_ph_max = st.number_input("pH Max", value=float(recipe_row['ph_max']), step=0.1)
+                            edit_visc_min = st.number_input("Viscosity Min", value=float(recipe_row['visc_min']), step=10.0)
+                            edit_visc_max = st.number_input("Viscosity Max", value=float(recipe_row['visc_max']), step=10.0)
+                            edit_de_max = st.number_input("DE Max", value=float(recipe_row['de_max']), step=0.01)
+                            edit_dl_tol = st.number_input("DL Tolerance", value=float(recipe_row['dl_tolerance']), step=0.1)
+                            edit_da_tol = st.number_input("Da Tolerance", value=float(recipe_row['da_tolerance']), step=0.1)
+                            edit_db_tol = st.number_input("Db Tolerance", value=float(recipe_row['db_tolerance']), step=0.1)
+                            edit_str_min = st.number_input("Strength Min", value=float(recipe_row['strength_min']), step=1.0)
+                            edit_str_max = st.number_input("Strength Max", value=float(recipe_row['strength_max']), step=1.0)
 
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.form_submit_button("Update Recipe"):
-                                update_recipe(selected_recipe, edit_colour_name,
-                                              edit_tsc_min, edit_tsc_max,
-                                              edit_ph_min, edit_ph_max,
-                                              edit_visc_min, edit_visc_max,
-                                              edit_de_max, edit_dl_tol, edit_da_tol,
-                                              edit_db_tol, edit_str_min, edit_str_max,
-                                              st.session_state.username)
-                                st.toast(f"✅ Recipe {selected_recipe} updated!", icon="✅")
-                                st.rerun()
-                        with col2:
-                            if st.form_submit_button("Delete Recipe", type="primary"):
-                                delete_recipe(selected_recipe, st.session_state.username)
-                                st.toast(f"🗑️ Recipe {selected_recipe} deleted!", icon="🗑️")
-                                st.rerun()
-        else:
-            st.info("No recipes defined yet.")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.form_submit_button("Update Recipe"):
+                                    update_recipe(selected_recipe, edit_colour_name,
+                                                  edit_tsc_min, edit_tsc_max,
+                                                  edit_ph_min, edit_ph_max,
+                                                  edit_visc_min, edit_visc_max,
+                                                  edit_de_max, edit_dl_tol, edit_da_tol,
+                                                  edit_db_tol, edit_str_min, edit_str_max,
+                                                  st.session_state.username)
+                                    st.toast(f"✅ Recipe {selected_recipe} updated!", icon="✅")
+                                    st.rerun()
+                            with col2:
+                                if st.form_submit_button("Delete Recipe", type="primary"):
+                                    delete_recipe(selected_recipe, st.session_state.username)
+                                    st.toast(f"🗑️ Recipe {selected_recipe} deleted!", icon="🗑️")
+                                    st.rerun()
+            else:
+                st.info("No recipes to edit.")
 
         # ---- Backup / Restore ----
         st.divider()
@@ -729,7 +765,7 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Scanner (enhanced: match by colour_name) ----
+            # ---- QR Scanner ----
             st.subheader("📷 Scan QR with Camera")
             if not QR_AVAILABLE:
                 st.warning(
@@ -747,7 +783,6 @@ if is_admin() or is_production():
                             parts = decoded.split('_', 1)
                             qr_name_part = parts[0] if len(parts) >= 1 else decoded
                             qr_batch = parts[1] if len(parts) == 2 else ''
-                            # Find recipe by colour_name (case-insensitive)
                             match = recipes[recipes['colour_name'].str.lower() == qr_name_part.lower()]
                             if not match.empty:
                                 recipe_code = match.iloc[0]['colour_code']
@@ -766,7 +801,7 @@ if is_admin() or is_production():
                     except Exception as e:
                         st.error(f"❌ Error processing image: {e}")
 
-            # ---- Manual QR text (enhanced) ----
+            # ---- Manual QR text ----
             st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input(
                 "Paste QR code content (format: <colour name>_<batch number> or just colour name)",
@@ -796,13 +831,10 @@ if is_admin() or is_production():
             # ---- Recipe Selection ----
             unique_colours = recipes['colour_code'].unique().tolist()
             default_recipe = st.session_state.get('qr_recipe', None)
-            # Set colour_filter session if not set
             if 'colour_filter' not in st.session_state:
                 st.session_state['colour_filter'] = "All"
 
-            # Build filter options: "All" + sorted unique colours
             filter_options = ["All"] + sorted(unique_colours)
-            # Determine index for colour_filter
             if st.session_state['colour_filter'] in filter_options:
                 filter_index = filter_options.index(st.session_state['colour_filter'])
             else:
@@ -815,7 +847,6 @@ if is_admin() or is_production():
                 index=filter_index,
                 key="colour_filter_select"
             )
-            # Keep session in sync with widget
             st.session_state['colour_filter'] = colour_filter
 
             if colour_filter != "All":
@@ -825,7 +856,6 @@ if is_admin() or is_production():
 
             if filtered_recipes.empty:
                 st.warning(f"No recipes found for: {colour_filter}")
-                # If filter is set but no recipes, reset to All
                 if colour_filter != "All":
                     st.session_state['colour_filter'] = "All"
                     st.rerun()
@@ -839,7 +869,6 @@ if is_admin() or is_production():
                         if key.startswith(default_recipe):
                             default_selected = key
                             break
-                # If default_selected not found, pick first
                 if default_selected is None and recipe_options:
                     default_selected = list(recipe_options.keys())[0]
                 selected = st.selectbox(
@@ -863,7 +892,6 @@ if is_admin() or is_production():
                     else:
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str, st.session_state.username)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
-                        # Clear QR session data
                         if 'qr_recipe' in st.session_state:
                             del st.session_state['qr_recipe']
                         if 'qr_batch' in st.session_state:
@@ -1027,7 +1055,7 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ---- COA Generation (with editable preview) ----
+    # ---- COA Generation ----
     with report_tabs[1]:
         st.subheader("📄 Certificate of Analysis - Editable Preview & Custom Template")
 
@@ -1035,7 +1063,6 @@ with tabs[report_index]:
         if completed_list.empty:
             st.info("No completed batches available for COA generation.")
         else:
-            # ---- Template customisation ----
             with st.expander("✏️ Customize COA Template (optional)", expanded=False):
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1050,7 +1077,6 @@ with tabs[report_index]:
                     prepared_by = st.text_input("Prepared by", value="MOKHJY", key="coa_prepared")
                     reviewed_by = st.text_input("Reviewed & approved by", value="MOKHJY", key="coa_reviewed")
 
-            # Build template dict
             template = {
                 'company_name': company_name,
                 'reg_no': reg_no,
@@ -1061,13 +1087,11 @@ with tabs[report_index]:
                 'reviewed_by': reviewed_by
             }
 
-            # ---- Select batch ----
             batch_options = {f"{row['batch_number']} ({row['colour_code']})": row['batch_number']
                              for _, row in completed_list.iterrows()}
             selected_batch = st.selectbox("Select Batch for COA", list(batch_options.keys()))
             batch_num = batch_options[selected_batch]
 
-            # ---- Load batch and recipe data ----
             all_batches = get_batches()
             batch_df = all_batches[all_batches['batch_number'] == batch_num]
             if not batch_df.empty:
@@ -1076,7 +1100,6 @@ with tabs[report_index]:
                 if not recipe_df.empty:
                     recipe = recipe_df.iloc[0]
 
-                    # Parse dates
                     mfg_val = batch['manufacturing_date']
                     if pd.isna(mfg_val) or mfg_val is None:
                         mfg_date = datetime.now()
@@ -1094,7 +1117,6 @@ with tabs[report_index]:
                     mfg_str = mfg_date.strftime("%d.%m.%Y")
                     expiry_str = expiry_date.strftime("%d.%m.%Y")
 
-                    # ---- Build results data for editing ----
                     results_data = pd.DataFrame({
                         "PARAMETER": ["pH", "TSC", "Viscosity", "DL", "Da", "Db", "DE", "Colour Strength"],
                         "SPECIFICATION": [
@@ -1119,18 +1141,15 @@ with tabs[report_index]:
                         ]
                     })
 
-                    # ---- Display preview with data_editor ----
                     st.subheader("📋 COA Preview (edit results inline)")
 
-                    # Top info
                     top_df = pd.DataFrame({
                         "Field": ["Product", "Batch No.", "Manufacturing date", "Expiry date"],
                         "Value": [recipe['colour_name'], batch['batch_number'], mfg_str, expiry_str]
                     })
                     st.dataframe(top_df, use_container_width=True, hide_index=True)
 
-                    # Editable results table
-                    st.markdown("**Edit the RESULT column if needed (numeric values for pH, TSC, DL, Da, Db, DE, Colour Strength):**")
+                    st.markdown("**Edit the RESULT column if needed:**")
                     edited_results = st.data_editor(
                         results_data,
                         use_container_width=True,
@@ -1143,14 +1162,12 @@ with tabs[report_index]:
                         }
                     )
 
-                    # Bottom info
                     bottom_df = pd.DataFrame({
                         "Field": ["Date:", "Prepared by:", "Reviewed & approved by:"],
                         "Value": [mfg_str, prepared_by, reviewed_by]
                     })
                     st.dataframe(bottom_df, use_container_width=True, hide_index=True)
 
-                    # ---- Generate PDF button ----
                     if st.button("📑 Generate COA PDF", type="primary"):
                         pdf_buffer = generate_coa_pdf(batch_num, template, edited_results)
                         if pdf_buffer:
@@ -1186,7 +1203,6 @@ if is_admin():
     with tabs[user_tab_index]:
         st.header("👥 User Management")
 
-        # ---- Create new user ----
         with st.form("add_user_form"):
             st.subheader("➕ Create New User")
             new_username = st.text_input("Username")
@@ -1204,7 +1220,6 @@ if is_admin():
                 else:
                     st.error("❌ Username and password cannot be empty.")
 
-        # ---- List users with edit/delete ----
         st.subheader("📋 Existing Users")
         users_df = get_users()
         if not users_df.empty:
@@ -1225,7 +1240,6 @@ if is_admin():
                                 if new_pass:
                                     update_user(selected_user, new_pass, new_role)
                                 else:
-                                    # If password field empty, keep existing password
                                     conn = sqlite3.connect('pigment.db')
                                     c = conn.cursor()
                                     c.execute("SELECT password FROM users WHERE username=?", (selected_user,))
