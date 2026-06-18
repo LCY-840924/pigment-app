@@ -75,7 +75,7 @@ def init_db():
                     batch_number TEXT,
                     recipe_id TEXT
                 )''')
-    # Add missing columns to recipes (if any)
+    # Add missing columns to recipes
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -729,7 +729,7 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Scanner ----
+            # ---- QR Scanner (improved) ----
             st.subheader("📷 Scan QR with Camera")
             if not QR_AVAILABLE:
                 st.warning(
@@ -744,6 +744,7 @@ if is_admin() or is_production():
                         decoded = decode_qr_from_image(img)
                         if decoded:
                             st.success(f"✅ Decoded: {decoded}")
+                            # Try to parse as recipeName_batchNumber
                             parts = decoded.split('_', 1)
                             if len(parts) == 2:
                                 qr_recipe, qr_batch = parts[0], parts[1]
@@ -752,19 +753,26 @@ if is_admin() or is_production():
                                     st.session_state['qr_batch'] = qr_batch
                                     st.rerun()
                                 else:
-                                    st.error(f"❌ Recipe '{qr_recipe}' not found.")
+                                    st.error(f"❌ Recipe '{qr_recipe}' not found. Please select manually.")
                             else:
-                                st.error("❌ Invalid QR format. Use 'recipeName_batchNumber'")
+                                # No underscore – treat entire decoded as recipe name
+                                if not recipes[recipes['colour_code'] == decoded].empty:
+                                    st.session_state['qr_recipe'] = decoded
+                                    st.session_state['qr_batch'] = ''  # leave batch blank
+                                    st.warning("✅ Recipe auto-detected. Please enter batch number manually.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Could not parse QR. Expected format: 'recipeName_batchNumber' or just a recipe name.")
                         else:
                             st.error("❌ No QR code detected. Please try again.")
                     except Exception as e:
                         st.error(f"❌ Error processing image: {e}")
 
-            # ---- Manual QR text ----
+            # ---- Manual QR text (improved) ----
             st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input(
-                "Paste QR code content (format: recipeName_batchNumber)",
-                placeholder="e.g. RED_2026-001"
+                "Paste QR code content (format: recipeName_batchNumber or just recipe name)",
+                placeholder="e.g. RED_2026-001 or RED"
             )
             if qr_input:
                 try:
@@ -779,9 +787,16 @@ if is_admin() or is_production():
                         else:
                             st.error(f"❌ Recipe '{qr_recipe}' not found.")
                     else:
-                        st.error("❌ Invalid QR format. Use 'recipeName_batchNumber'")
+                        # No underscore – treat as recipe name
+                        if not recipes[recipes['colour_code'] == qr_input].empty:
+                            st.session_state['qr_recipe'] = qr_input
+                            st.session_state['qr_batch'] = ''
+                            st.warning("✅ Recipe recognised. Please enter batch number manually.")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Could not parse input. Expected format: 'recipeName_batchNumber' or just a recipe name.")
                 except Exception as e:
-                    st.error(f"❌ Error parsing QR: {e}")
+                    st.error(f"❌ Error parsing input: {e}")
 
             # ---- Recipe Selection ----
             unique_colours = recipes['colour_code'].unique().tolist()
@@ -1168,10 +1183,8 @@ if is_admin():
         st.subheader("📋 Existing Users")
         users_df = get_users()
         if not users_df.empty:
-            # Exclude the currently logged-in user from deletion/editing (optional)
             st.dataframe(users_df, use_container_width=True)
 
-            # Edit user
             st.subheader("✏️ Edit User")
             user_list = users_df['username'].tolist()
             selected_user = st.selectbox("Select user to edit/delete", user_list)
@@ -1187,7 +1200,7 @@ if is_admin():
                                 if new_pass:
                                     update_user(selected_user, new_pass, new_role)
                                 else:
-                                    # If password field empty, keep existing password (we need to retrieve it)
+                                    # If password field empty, keep existing password
                                     conn = sqlite3.connect('pigment.db')
                                     c = conn.cursor()
                                     c.execute("SELECT password FROM users WHERE username=?", (selected_user,))
