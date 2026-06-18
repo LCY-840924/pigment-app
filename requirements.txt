@@ -1,9 +1,6 @@
-<<<<<<< HEAD
-
 streamlit
 pandas
 plotly
 reportlab
 pyzbar
 Pillow
->>>>>>> origin/master
