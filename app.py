@@ -644,17 +644,12 @@ if is_admin():
         # ---- COLOUR CODE MANAGEMENT ----
         st.subheader("🎨 Manage Colour Codes (Major Colours)")
 
-        # Add new colour code - standalone form (always visible)
+        # Add new colour code - simple form (no columns)
         with st.form("add_colour_code_form"):
             st.write("**Add New Colour Code**")
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                new_code = st.text_input("Code (e.g., RED)", max_chars=20)
-            with col2:
-                new_desc = st.text_input("Description (optional)")
-            with col3:
-                st.write("")  # spacing
-                submitted = st.form_submit_button("➕ Add Colour Code")
+            new_code = st.text_input("Code (e.g., RED)", max_chars=20)
+            new_desc = st.text_input("Description (optional)")
+            submitted = st.form_submit_button("➕ Add Colour Code")
             if submitted:
                 if new_code:
                     if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
