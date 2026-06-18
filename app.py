@@ -43,7 +43,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
                 )''')
-    # Add missing columns (safe)
+    # Add missing columns safely
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -63,7 +63,6 @@ def init_db():
         c.execute("ALTER TABLE batches ADD COLUMN attempt_count INTEGER DEFAULT 0")
     except:
         pass
-    # Set default values for existing rows
     c.execute("""UPDATE recipes SET
                  tsc_min = COALESCE(tsc_min, 40.0),
                  tsc_max = COALESCE(tsc_max, 50.0),
@@ -383,11 +382,11 @@ if is_admin():
             with col1:
                 tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
                 ph_min = st.number_input("pH Min", value=8.0, step=0.1)
-                visc_min = st.number_input("Viscosity Min (cP)", value=1100, step=10.0)
+                visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)   # FIX: float
             with col2:
                 tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
                 ph_max = st.number_input("pH Max", value=9.0, step=0.1)
-                visc_max = st.number_input("Viscosity Max (cP)", value=1300, step=10.0)
+                visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)  # FIX: float
 
             st.subheader("🎨 Colouristic Properties")
             col1, col2 = st.columns(2)
@@ -609,7 +608,7 @@ if is_admin() or is_qa():
                 dl = st.number_input("DL", value=0.0, step=0.01)
                 da = st.number_input("Da", value=0.0, step=0.01)
             with col2:
-                visc = st.number_input("Viscosity (cP)", value=1200, step=10.0)
+                visc = st.number_input("Viscosity (cP)", value=1200.0, step=10.0)   # FIX: float
                 de = st.number_input("DE", value=0.5, step=0.01)
                 db = st.number_input("Db", value=0.0, step=0.01)
                 colour_strength = st.number_input("Colour Strength (%)", value=100.0, step=0.1)
