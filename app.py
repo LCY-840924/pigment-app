@@ -11,6 +11,26 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
+# ---------- QR DECODER ----------
+try:
+    from PIL import Image
+    import pyzbar.pyzbar as pyzbar
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
+
+def decode_qr_from_image(image):
+    """Decode QR code from a PIL Image. Returns decoded string or None."""
+    if not QR_AVAILABLE:
+        return None
+    try:
+        decoded_objects = pyzbar.decode(image)
+        for obj in decoded_objects:
+            return obj.data.decode('utf-8')
+    except Exception:
+        return None
+    return None
+
 # ---------- USER CREDENTIALS ----------
 CREDENTIALS = {
     "admin": {"password": "admin123", "role": "Admin"},
@@ -382,11 +402,11 @@ if is_admin():
             with col1:
                 tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
                 ph_min = st.number_input("pH Min", value=8.0, step=0.1)
-                visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)   # FIX: float
+                visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)
             with col2:
                 tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
                 ph_max = st.number_input("pH Max", value=9.0, step=0.1)
-                visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)  # FIX: float
+                visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)
 
             st.subheader("🎨 Colouristic Properties")
             col1, col2 = st.columns(2)
@@ -522,8 +542,37 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Code Input ----
-            st.subheader("📷 QR Code Input (optional)")
+            # ---- QR Code Scanner (Camera) ----
+            st.subheader("📷 Scan QR with Camera")
+            if not QR_AVAILABLE:
+                st.warning("QR scanning library not installed. Please install pyzbar and Pillow.")
+            else:
+                camera_image = st.camera_input("Point camera at QR code")
+                if camera_image is not None:
+                    try:
+                        img = Image.open(camera_image)
+                        decoded = decode_qr_from_image(img)
+                        if decoded:
+                            st.success(f"✅ Decoded: {decoded}")
+                            # Parse and fill
+                            parts = decoded.split('_', 1)
+                            if len(parts) == 2:
+                                qr_recipe, qr_batch = parts[0], parts[1]
+                                if not recipes[recipes['colour_code'] == qr_recipe].empty:
+                                    st.session_state['qr_recipe'] = qr_recipe
+                                    st.session_state['qr_batch'] = qr_batch
+                                    st.rerun()  # refresh to fill fields
+                                else:
+                                    st.error(f"❌ Recipe '{qr_recipe}' not found.")
+                            else:
+                                st.error("❌ Invalid QR format. Use 'recipeName_batchNumber'")
+                        else:
+                            st.error("❌ No QR code detected. Please try again.")
+                    except Exception as e:
+                        st.error(f"❌ Error processing image: {e}")
+
+            # ---- Manual QR text input (fallback) ----
+            st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input("Paste QR code content (format: recipeName_batchNumber)",
                                      placeholder="e.g. RED_2026-001")
             if qr_input:
@@ -535,6 +584,7 @@ if is_admin() or is_production():
                             st.session_state['qr_recipe'] = qr_recipe
                             st.session_state['qr_batch'] = qr_batch
                             st.success(f"✅ Recognised: Recipe '{qr_recipe}', Batch '{qr_batch}'")
+                            st.rerun()
                         else:
                             st.error(f"❌ Recipe '{qr_recipe}' not found.")
                     else:
@@ -577,6 +627,7 @@ if is_admin() or is_production():
                 manufacturing_date = st.date_input("Manufacturing Date", datetime.now())
                 manufacturing_date_str = manufacturing_date.strftime("%Y-%m-%d")
 
+                # Clear QR data after issue (optional)
                 if st.button("▶ Issue Batch", type="primary"):
                     if not batch_number:
                         st.error("❌ Please enter a Batch Number.")
@@ -585,6 +636,11 @@ if is_admin() or is_production():
                     else:
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
+                        # Clear QR session data
+                        if 'qr_recipe' in st.session_state:
+                            del st.session_state['qr_recipe']
+                        if 'qr_batch' in st.session_state:
+                            del st.session_state['qr_batch']
                         st.rerun()
 
 # ---------- TAB 3 / 4: QA TESTING (ADMIN & QA) ----------
@@ -608,7 +664,7 @@ if is_admin() or is_qa():
                 dl = st.number_input("DL", value=0.0, step=0.01)
                 da = st.number_input("Da", value=0.0, step=0.01)
             with col2:
-                visc = st.number_input("Viscosity (cP)", value=1200.0, step=10.0)   # FIX: float
+                visc = st.number_input("Viscosity (cP)", value=1200.0, step=10.0)
                 de = st.number_input("DE", value=0.5, step=0.01)
                 db = st.number_input("Db", value=0.0, step=0.01)
                 colour_strength = st.number_input("Colour Strength (%)", value=100.0, step=0.1)
