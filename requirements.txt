@@ -1,7 +1,5 @@
 <<<<<<< HEAD
-pyzbar
-Pillow
-=======
+
 streamlit
 pandas
 plotly
