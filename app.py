@@ -31,17 +31,11 @@ def decode_qr_from_image(image):
         pass
     return None
 
-# ---------- USER CREDENTIALS ----------
-CREDENTIALS = {
-    "admin": {"password": "admin123", "role": "Admin"},
-    "production": {"password": "prod123", "role": "Production"},
-    "qa": {"password": "qa123", "role": "QA"}
-}
-
 # ---------- DATABASE SETUP ----------
 def init_db():
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
+    # --- Recipes ---
     c.execute('''CREATE TABLE IF NOT EXISTS recipes (
                     recipe_id TEXT PRIMARY KEY,
                     colour_code TEXT UNIQUE,
@@ -52,6 +46,7 @@ def init_db():
                     db_tolerance REAL DEFAULT 0.6, strength_min REAL DEFAULT 95.0,
                     strength_max REAL DEFAULT 105.0
                 )''')
+    # --- Batches ---
     c.execute('''CREATE TABLE IF NOT EXISTS batches (
                     batch_id TEXT PRIMARY KEY,
                     batch_number TEXT UNIQUE, recipe_id TEXT, colour_code TEXT,
@@ -60,10 +55,27 @@ def init_db():
                     manufacturing_date TEXT, attempt_count INTEGER DEFAULT 0,
                     remark TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )''')
+    # --- Seq counter ---
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
                 )''')
-    # Add missing columns
+    # --- Users ---
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL
+                )''')
+    # --- Logs ---
+    c.execute('''CREATE TABLE IF NOT EXISTS logs (
+                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    username TEXT,
+                    action TEXT,
+                    details TEXT,
+                    batch_number TEXT,
+                    recipe_id TEXT
+                )''')
+    # Add missing columns to recipes (if any)
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -83,6 +95,7 @@ def init_db():
         c.execute("ALTER TABLE batches ADD COLUMN attempt_count INTEGER DEFAULT 0")
     except:
         pass
+    # Set default values for recipes
     c.execute("""UPDATE recipes SET
                  tsc_min = COALESCE(tsc_min, 40.0),
                  tsc_max = COALESCE(tsc_max, 50.0),
@@ -96,6 +109,25 @@ def init_db():
                  db_tolerance = COALESCE(db_tolerance, 0.6),
                  strength_min = COALESCE(strength_min, 95.0),
                  strength_max = COALESCE(strength_max, 105.0)""")
+    # Seed default users if the table is empty
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        default_users = [
+            ("admin", "admin123", "Admin"),
+            ("production", "prod123", "Production"),
+            ("qa", "qa123", "QA")
+        ]
+        c.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)", default_users)
+    conn.commit()
+    conn.close()
+
+# ---------- LOGGING FUNCTION ----------
+def add_log(username, action, details, batch_number=None, recipe_id=None):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO logs (timestamp, username, action, details, batch_number, recipe_id) VALUES (?,?,?,?,?,?)",
+              (timestamp, username, action, details, batch_number, recipe_id))
     conn.commit()
     conn.close()
 
@@ -133,7 +165,7 @@ def batch_exists(batch_number):
     return exists
 
 def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max,
-               visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max):
+               visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     c.execute("""INSERT OR REPLACE INTO recipes
@@ -145,10 +177,11 @@ def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max))
     conn.commit()
     conn.close()
+    add_log(username, "Add Recipe", f"Added recipe {colour_code} - {colour_name}", recipe_id=colour_code)
 
 def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                   visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
-                  str_min, str_max):
+                  str_min, str_max, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     c.execute("""UPDATE recipes SET
@@ -161,15 +194,17 @@ def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                de_max, dl_tol, da_tol, db_tol, str_min, str_max, recipe_id))
     conn.commit()
     conn.close()
+    add_log(username, "Update Recipe", f"Updated recipe {recipe_id}", recipe_id=recipe_id)
 
-def delete_recipe(recipe_id):
+def delete_recipe(recipe_id, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     c.execute("DELETE FROM recipes WHERE recipe_id = ?", (recipe_id,))
     conn.commit()
     conn.close()
+    add_log(username, "Delete Recipe", f"Deleted recipe {recipe_id}", recipe_id=recipe_id)
 
-def add_batch(batch_number, recipe_id, colour_code, manufacturing_date):
+def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     batch_id = f"b_{batch_number}"
@@ -178,18 +213,24 @@ def add_batch(batch_number, recipe_id, colour_code, manufacturing_date):
         (batch_id, batch_number, recipe_id, colour_code, 'Issued', 'Mixing', manufacturing_date))
     conn.commit()
     conn.close()
+    add_log(username, "Issue Batch", f"Issued batch {batch_number} for {colour_code}", batch_number=batch_number, recipe_id=recipe_id)
     return batch_number
 
-def update_status(batch_id, status, stage):
+def update_status(batch_id, status, stage, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
+    c.execute("SELECT batch_number FROM batches WHERE batch_id = ?", (batch_id,))
+    batch_number = c.fetchone()[0]
     c.execute("UPDATE batches SET status=?, stage=? WHERE batch_id=?", (status, stage, batch_id))
     conn.commit()
     conn.close()
+    add_log(username, "Update Status", f"Batch {batch_number} status changed to {status} (stage: {stage})", batch_number=batch_number)
 
-def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
+def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
+    c.execute("SELECT batch_number FROM batches WHERE batch_id = ?", (batch_id,))
+    batch_number = c.fetchone()[0]
     c.execute("""SELECT tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max,
                         de_max, dl_tolerance, da_tolerance, db_tolerance,
                         strength_min, strength_max
@@ -225,17 +266,64 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark):
         (tsc, ph, visc, de, dl, da, db, colour_strength, status, stage, new_attempt, remark, batch_id))
     conn.commit()
     conn.close()
+    add_log(username, "Submit QA", f"QA submitted for batch {batch_number}, result: {msg}", batch_number=batch_number)
     return msg
+
+# ---------- USER MANAGEMENT ----------
+def get_users():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT username, role FROM users ORDER BY username", conn)
+    conn.close()
+    return df
+
+def add_user(username, password, role):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)", (username, password, role))
+    conn.commit()
+    conn.close()
+
+def update_user(username, password, role):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("UPDATE users SET password=?, role=? WHERE username=?", (password, role, username))
+    conn.commit()
+    conn.close()
+
+def delete_user(username):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM users WHERE username=?", (username,))
+    conn.commit()
+    conn.close()
+
+def check_login(username, password):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("SELECT username, role FROM users WHERE username=? AND password=?", (username, password))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+# ---------- LOG RETRIEVAL ----------
+def get_logs():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
+    conn.close()
+    return df
 
 # ---------- BACKUP / RESTORE ----------
 def export_db_to_zip():
     conn = sqlite3.connect('pigment.db')
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for table in ['recipes', 'batches', 'seq_counter']:
-            df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-            csv_data = df.to_csv(index=False).encode('utf-8')
-            zipf.writestr(f"{table}.csv", csv_data)
+        for table in ['recipes', 'batches', 'seq_counter', 'users', 'logs']:
+            try:
+                df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
+                csv_data = df.to_csv(index=False).encode('utf-8')
+                zipf.writestr(f"{table}.csv", csv_data)
+            except:
+                pass
     conn.close()
     zip_buffer.seek(0)
     return zip_buffer
@@ -244,7 +332,7 @@ def import_db_from_zip(zip_file):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     with zipfile.ZipFile(zip_file, 'r') as zipf:
-        for table in ['recipes', 'batches', 'seq_counter']:
+        for table in ['recipes', 'batches', 'seq_counter', 'users', 'logs']:
             if f"{table}.csv" in zipf.namelist():
                 df = pd.read_csv(zipf.open(f"{table}.csv"))
                 c.execute(f"DELETE FROM {table}")
@@ -329,7 +417,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
 
         # ---- HEADER (left-aligned, company name bold) ----
         header_bold_style = ParagraphStyle('HeaderBold', parent=styles['Normal'],
-                                           fontSize=9, leading=11, alignment=0)  # 0 = left
+                                           fontSize=9, leading=11, alignment=0)
         header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'],
                                              fontSize=9, leading=11, alignment=0)
 
@@ -352,7 +440,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         # ---- TITLE (centered) ----
         title_text = template.get('title', "PROVISIONAL CERTIFICATE OF ANALYSIS")
         title_style = ParagraphStyle('Title', parent=styles['Title'],
-                                     fontSize=14, alignment=1, spaceAfter=10)  # 1 = center
+                                     fontSize=14, alignment=1, spaceAfter=10)
         story.append(Paragraph(title_text, title_style))
 
         # ---- TOP TABLE (Product, Batch, Dates) ----
@@ -362,7 +450,6 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             ["Manufacturing date:", mfg_str],
             ["Expiry date:", expiry_str]
         ]
-        # Use fixed column widths: label 30%, value 70%
         top_table = Table(top_data, colWidths=[doc.width * 0.30, doc.width * 0.70])
         top_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
@@ -384,7 +471,6 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         for param, spec, result in results:
             data.append([param, spec, result])
 
-        # Three columns equal width
         main_table = Table(data, colWidths=[doc.width * 0.33, doc.width * 0.34, doc.width * 0.33])
         main_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
@@ -441,8 +527,8 @@ def login():
 
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
-        st.session_state.role = None
         st.session_state.username = None
+        st.session_state.role = None
 
     if not st.session_state.logged_in:
         with st.form("login_form"):
@@ -450,10 +536,11 @@ def login():
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
             if submitted:
-                if username in CREDENTIALS and CREDENTIALS[username]['password'] == password:
+                user = check_login(username, password)
+                if user:
                     st.session_state.logged_in = True
-                    st.session_state.role = CREDENTIALS[username]['role']
-                    st.session_state.username = username
+                    st.session_state.username = user[0]
+                    st.session_state.role = user[1]
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
@@ -462,12 +549,13 @@ def login():
         st.sidebar.success(f"Logged in as: **{st.session_state.username}** (Role: {st.session_state.role})")
         if st.sidebar.button("Logout"):
             st.session_state.logged_in = False
-            st.session_state.role = None
             st.session_state.username = None
+            st.session_state.role = None
             st.rerun()
 
 login()
 
+# ---------- ROLE HELPERS ----------
 def is_admin():
     return st.session_state.role == "Admin"
 def is_production():
@@ -478,9 +566,10 @@ def is_qa():
 # ---------- MAIN APP ----------
 st.title("🎨 Pigment Dispersion System")
 
+# Build tabs based on role
 tabs_list = []
 if is_admin():
-    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports"]
+    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports", "👥 User Management", "📜 Activity Log"]
 elif is_production():
     tabs_list = ["Issue Batch", "WIP Progress", "📊 Reports"]
 elif is_qa():
@@ -522,7 +611,7 @@ if is_admin():
                 if col_code:
                     add_recipe(col_code, col_name, tsc_min, tsc_max, ph_min, ph_max,
                                visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
-                               str_min, str_max)
+                               str_min, str_max, st.session_state.username)
                     st.toast(f"✅ Recipe for {col_code} saved!", icon="✅")
                     st.rerun()
 
@@ -594,12 +683,13 @@ if is_admin():
                                               edit_ph_min, edit_ph_max,
                                               edit_visc_min, edit_visc_max,
                                               edit_de_max, edit_dl_tol, edit_da_tol,
-                                              edit_db_tol, edit_str_min, edit_str_max)
+                                              edit_db_tol, edit_str_min, edit_str_max,
+                                              st.session_state.username)
                                 st.toast(f"✅ Recipe {selected_recipe} updated!", icon="✅")
                                 st.rerun()
                         with col2:
                             if st.form_submit_button("Delete Recipe", type="primary"):
-                                delete_recipe(selected_recipe)
+                                delete_recipe(selected_recipe, st.session_state.username)
                                 st.toast(f"🗑️ Recipe {selected_recipe} deleted!", icon="🗑️")
                                 st.rerun()
         else:
@@ -734,7 +824,7 @@ if is_admin() or is_production():
                     elif batch_exists(batch_number):
                         st.error(f"❌ Batch Number '{batch_number}' already exists.")
                     else:
-                        add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
+                        add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str, st.session_state.username)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
                         if 'qr_recipe' in st.session_state:
                             del st.session_state['qr_recipe']
@@ -775,7 +865,7 @@ if is_admin() or is_qa():
                 if not remark:
                     st.warning("⚠️ Please add a remark for traceability.")
                 else:
-                    msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark)
+                    msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, st.session_state.username)
                     st.toast(msg, icon="🔬")
                     st.rerun()
         else:
@@ -811,23 +901,23 @@ with tabs[wip_index]:
                 if is_admin() or is_production():
                     if row['status'] == 'Issued':
                         if st.button(f"▶ Mix", key=f"mix_{batch_id}"):
-                            update_status(batch_id, 'Mixing', 'Mixing')
+                            update_status(batch_id, 'Mixing', 'Mixing', st.session_state.username)
                             st.rerun()
                     elif row['status'] == 'Mixing':
                         if st.button(f"⚙ Mill", key=f"mill_{batch_id}"):
-                            update_status(batch_id, 'Milling', 'Milling')
+                            update_status(batch_id, 'Milling', 'Milling', st.session_state.username)
                             st.rerun()
                     elif row['status'] == 'Milling':
                         if st.button(f"🔬 Submit to QA", key=f"qa_{batch_id}"):
-                            update_status(batch_id, 'QA_Pending', 'QA')
+                            update_status(batch_id, 'QA_Pending', 'QA', st.session_state.username)
                             st.rerun()
                     elif row['status'] == 'QA_Failed':
                         if st.button(f"🔄 Retry", key=f"retry_{batch_id}"):
-                            update_status(batch_id, 'Milling', 'Milling')
+                            update_status(batch_id, 'Milling', 'Milling', st.session_state.username)
                             st.rerun()
                     elif row['status'] == 'QA_Passed':
                         if st.button(f"✅ Complete", key=f"comp_{batch_id}"):
-                            update_status(batch_id, 'Completed', 'Finished')
+                            update_status(batch_id, 'Completed', 'Finished', st.session_state.username)
                             st.rerun()
                     else:
                         st.write("⏳")
@@ -1049,6 +1139,84 @@ with tabs[report_index]:
                 file_name=f"completed_batches_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
+
+# ---------- TAB: USER MANAGEMENT (ADMIN ONLY) ----------
+if is_admin():
+    user_tab_index = tabs_list.index("👥 User Management")
+    with tabs[user_tab_index]:
+        st.header("👥 User Management")
+
+        # ---- Create new user ----
+        with st.form("add_user_form"):
+            st.subheader("➕ Create New User")
+            new_username = st.text_input("Username")
+            new_password = st.text_input("Password", type="password")
+            new_role = st.selectbox("Role", ["Admin", "Production", "QA"])
+            if st.form_submit_button("Add User"):
+                if new_username and new_password:
+                    try:
+                        add_user(new_username, new_password, new_role)
+                        add_log(st.session_state.username, "Add User", f"Added user {new_username} with role {new_role}")
+                        st.toast(f"✅ User {new_username} added!", icon="✅")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("❌ Username already exists!")
+                else:
+                    st.error("❌ Username and password cannot be empty.")
+
+        # ---- List users with edit/delete ----
+        st.subheader("📋 Existing Users")
+        users_df = get_users()
+        if not users_df.empty:
+            # Exclude the currently logged-in user from deletion/editing (optional)
+            st.dataframe(users_df, use_container_width=True)
+
+            # Edit user
+            st.subheader("✏️ Edit User")
+            user_list = users_df['username'].tolist()
+            selected_user = st.selectbox("Select user to edit/delete", user_list)
+            if selected_user:
+                user_row = users_df[users_df['username'] == selected_user].iloc[0]
+                with st.expander(f"Edit {selected_user}"):
+                    with st.form("edit_user_form"):
+                        new_pass = st.text_input("New Password", type="password", value="")
+                        new_role = st.selectbox("New Role", ["Admin", "Production", "QA"], index=["Admin","Production","QA"].index(user_row['role']))
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("Update User"):
+                                if new_pass:
+                                    update_user(selected_user, new_pass, new_role)
+                                else:
+                                    # If password field empty, keep existing password (we need to retrieve it)
+                                    conn = sqlite3.connect('pigment.db')
+                                    c = conn.cursor()
+                                    c.execute("SELECT password FROM users WHERE username=?", (selected_user,))
+                                    old_pass = c.fetchone()[0]
+                                    conn.close()
+                                    update_user(selected_user, old_pass, new_role)
+                                add_log(st.session_state.username, "Update User", f"Updated user {selected_user}")
+                                st.toast(f"✅ User {selected_user} updated!", icon="✅")
+                                st.rerun()
+                        with col2:
+                            if selected_user != st.session_state.username:
+                                if st.form_submit_button("Delete User", type="primary"):
+                                    delete_user(selected_user)
+                                    add_log(st.session_state.username, "Delete User", f"Deleted user {selected_user}")
+                                    st.toast(f"🗑️ User {selected_user} deleted!", icon="🗑️")
+                                    st.rerun()
+                            else:
+                                st.warning("You cannot delete your own account.")
+
+# ---------- TAB: ACTIVITY LOG (ADMIN ONLY) ----------
+if is_admin():
+    log_tab_index = tabs_list.index("📜 Activity Log")
+    with tabs[log_tab_index]:
+        st.header("📜 Activity Log (Traceability)")
+        logs_df = get_logs()
+        if logs_df.empty:
+            st.info("No activity logs yet.")
+        else:
+            st.dataframe(logs_df, use_container_width=True)
 
 # ---------- SIDEBAR REFRESH ----------
 st.sidebar.button("🔄 Refresh Data", on_click=lambda: st.rerun())
