@@ -729,7 +729,7 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Scanner (improved) ----
+            # ---- QR Scanner (enhanced auto‑select) ----
             st.subheader("📷 Scan QR with Camera")
             if not QR_AVAILABLE:
                 st.warning(
@@ -744,13 +744,14 @@ if is_admin() or is_production():
                         decoded = decode_qr_from_image(img)
                         if decoded:
                             st.success(f"✅ Decoded: {decoded}")
-                            # Try to parse as recipeName_batchNumber
                             parts = decoded.split('_', 1)
                             if len(parts) == 2:
                                 qr_recipe, qr_batch = parts[0], parts[1]
                                 if not recipes[recipes['colour_code'] == qr_recipe].empty:
+                                    # Auto‑filter and auto‑select
                                     st.session_state['qr_recipe'] = qr_recipe
                                     st.session_state['qr_batch'] = qr_batch
+                                    st.session_state['colour_filter'] = qr_recipe  # set filter
                                     st.rerun()
                                 else:
                                     st.error(f"❌ Recipe '{qr_recipe}' not found. Please select manually.")
@@ -758,8 +759,9 @@ if is_admin() or is_production():
                                 # No underscore – treat entire decoded as recipe name
                                 if not recipes[recipes['colour_code'] == decoded].empty:
                                     st.session_state['qr_recipe'] = decoded
-                                    st.session_state['qr_batch'] = ''  # leave batch blank
-                                    st.warning("✅ Recipe auto-detected. Please enter batch number manually.")
+                                    st.session_state['qr_batch'] = ''
+                                    st.session_state['colour_filter'] = decoded
+                                    st.warning("✅ Recipe auto‑detected. Please enter batch number manually.")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ Could not parse QR. Expected format: 'recipeName_batchNumber' or just a recipe name.")
@@ -768,7 +770,7 @@ if is_admin() or is_production():
                     except Exception as e:
                         st.error(f"❌ Error processing image: {e}")
 
-            # ---- Manual QR text (improved) ----
+            # ---- Manual QR text (enhanced) ----
             st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input(
                 "Paste QR code content (format: recipeName_batchNumber or just recipe name)",
@@ -782,6 +784,7 @@ if is_admin() or is_production():
                         if not recipes[recipes['colour_code'] == qr_recipe].empty:
                             st.session_state['qr_recipe'] = qr_recipe
                             st.session_state['qr_batch'] = qr_batch
+                            st.session_state['colour_filter'] = qr_recipe
                             st.success(f"✅ Recognised: Recipe '{qr_recipe}', Batch '{qr_batch}'")
                             st.rerun()
                         else:
@@ -791,6 +794,7 @@ if is_admin() or is_production():
                         if not recipes[recipes['colour_code'] == qr_input].empty:
                             st.session_state['qr_recipe'] = qr_input
                             st.session_state['qr_batch'] = ''
+                            st.session_state['colour_filter'] = qr_input
                             st.warning("✅ Recipe recognised. Please enter batch number manually.")
                             st.rerun()
                         else:
@@ -801,11 +805,28 @@ if is_admin() or is_production():
             # ---- Recipe Selection ----
             unique_colours = recipes['colour_code'].unique().tolist()
             default_recipe = st.session_state.get('qr_recipe', None)
-            default_index = 0
-            if default_recipe and default_recipe in unique_colours:
-                default_index = unique_colours.index(default_recipe)
+            # Set colour_filter session if not set
+            if 'colour_filter' not in st.session_state:
+                st.session_state['colour_filter'] = "All"
 
-            colour_filter = st.selectbox("Filter by Colour Code", ["All"] + sorted(unique_colours), index=0)
+            # Build filter options: "All" + sorted unique colours
+            filter_options = ["All"] + sorted(unique_colours)
+            # Determine index for colour_filter
+            if st.session_state['colour_filter'] in filter_options:
+                filter_index = filter_options.index(st.session_state['colour_filter'])
+            else:
+                filter_index = 0
+                st.session_state['colour_filter'] = "All"
+
+            colour_filter = st.selectbox(
+                "Filter by Colour Code",
+                filter_options,
+                index=filter_index,
+                key="colour_filter_select"
+            )
+            # Keep session in sync with widget
+            st.session_state['colour_filter'] = colour_filter
+
             if colour_filter != "All":
                 filtered_recipes = recipes[recipes['colour_code'] == colour_filter]
             else:
@@ -813,6 +834,10 @@ if is_admin() or is_production():
 
             if filtered_recipes.empty:
                 st.warning(f"No recipes found for: {colour_filter}")
+                # If filter is set but no recipes, reset to All
+                if colour_filter != "All":
+                    st.session_state['colour_filter'] = "All"
+                    st.rerun()
             else:
                 sorted_recipes = filtered_recipes.sort_values('colour_code')
                 recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['recipe_id']
@@ -823,8 +848,14 @@ if is_admin() or is_production():
                         if key.startswith(default_recipe):
                             default_selected = key
                             break
-                selected = st.selectbox("Select Recipe", list(recipe_options.keys()),
-                                        index=list(recipe_options.keys()).index(default_selected) if default_selected else 0)
+                # If default_selected not found, pick first
+                if default_selected is None and recipe_options:
+                    default_selected = list(recipe_options.keys())[0]
+                selected = st.selectbox(
+                    "Select Recipe",
+                    list(recipe_options.keys()),
+                    index=list(recipe_options.keys()).index(default_selected) if default_selected else 0
+                )
                 recipe_id = recipe_options[selected]
                 colour_code = selected.split(" - ")[0]
 
@@ -841,10 +872,13 @@ if is_admin() or is_production():
                     else:
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str, st.session_state.username)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
+                        # Clear QR session data
                         if 'qr_recipe' in st.session_state:
                             del st.session_state['qr_recipe']
                         if 'qr_batch' in st.session_state:
                             del st.session_state['qr_batch']
+                        if 'colour_filter' in st.session_state:
+                            del st.session_state['colour_filter']
                         st.rerun()
 
 # ---------- TAB 3 / 4: QA TESTING ----------
