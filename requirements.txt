@@ -1,2 +1,11 @@
+<<<<<<< HEAD
 pyzbar
 Pillow
+=======
+streamlit
+pandas
+plotly
+reportlab
+pyzbar
+Pillow
+>>>>>>> origin/master
