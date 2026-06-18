@@ -243,13 +243,12 @@ def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
 def delete_recipe(recipe_id, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
-    # Also delete any batches linked to this recipe? We'll just delete the recipe.
     c.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     conn.commit()
     conn.close()
     add_log(username, "Delete Recipe", f"Deleted recipe ID {recipe_id}", recipe_id=recipe_id)
 
-# ---------- BATCH FUNCTIONS (unchanged) ----------
+# ---------- BATCH FUNCTIONS ----------
 def get_batches():
     conn = sqlite3.connect('pigment.db')
     df = pd.read_sql_query("SELECT * FROM batches ORDER BY created_at DESC", conn)
@@ -406,7 +405,7 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION (unchanged) ----------
+# ---------- COA GENERATION ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
     try:
         all_batches = get_batches()
@@ -644,24 +643,30 @@ if is_admin():
 
         # ---- COLOUR CODE MANAGEMENT ----
         st.subheader("🎨 Manage Colour Codes (Major Colours)")
-        colour_codes_df = get_colour_codes()
 
-        # Add new colour code
-        with st.expander("➕ Add New Colour Code", expanded=False):
-            with st.form("add_colour_code_form"):
-                new_code = st.text_input("Colour Code (e.g., RED)", max_chars=20)
+        # Add new colour code - standalone form (always visible)
+        with st.form("add_colour_code_form"):
+            st.write("**Add New Colour Code**")
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                new_code = st.text_input("Code (e.g., RED)", max_chars=20)
+            with col2:
                 new_desc = st.text_input("Description (optional)")
-                if st.form_submit_button("Add Colour Code"):
-                    if new_code:
-                        if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
-                            st.success(f"✅ Colour code {new_code.upper()} added!")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Colour code {new_code.upper()} already exists!")
+            with col3:
+                st.write("")  # spacing
+                submitted = st.form_submit_button("➕ Add Colour Code")
+            if submitted:
+                if new_code:
+                    if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
+                        st.success(f"✅ Colour code {new_code.upper()} added!")
+                        st.rerun()
                     else:
-                        st.error("❌ Colour Code cannot be empty.")
+                        st.error(f"❌ Colour code {new_code.upper()} already exists!")
+                else:
+                    st.error("❌ Code cannot be empty.")
 
-        # Edit/Delete existing colour codes
+        # Display existing codes with Edit/Delete
+        colour_codes_df = get_colour_codes()
         if not colour_codes_df.empty:
             st.dataframe(colour_codes_df, use_container_width=True, column_config={
                 "id": "ID",
@@ -739,7 +744,6 @@ if is_admin():
                             st.write(f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP")
                             st.write(f"DE: ≤{recipe['de_max']:.2f}")
                         with col4:
-                            # Edit button opens a popup (we'll use a form in a temporary expander)
                             if st.button(f"✏️ Edit", key=f"edit_{recipe['id']}"):
                                 st.session_state['edit_recipe_id'] = recipe['id']
                                 st.rerun()
@@ -756,7 +760,6 @@ if is_admin():
                     recipe = recipe_to_edit.iloc[0]
                     with st.expander(f"✏️ Editing {recipe['colour_name']}", expanded=True):
                         with st.form("edit_recipe_form"):
-                            # Colour code is not editable here; we could allow changing it, but keep simple
                             st.text_input("Colour Code", value=recipe['colour_code'], disabled=True)
                             edit_colour_name = st.text_input("Colour Name", value=recipe['colour_name'])
                             edit_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']), step=0.1)
@@ -787,7 +790,6 @@ if is_admin():
         # ---- Add New Recipe ----
         st.subheader("➕ Add New Recipe")
         with st.form("add_recipe_form"):
-            # Choose colour code from existing ones
             colour_codes = get_colour_codes()
             if colour_codes.empty:
                 st.warning("Please add a colour code first.")
