@@ -31,30 +31,39 @@ def decode_qr_from_image(image):
         pass
     return None
 
-# ---------- DATABASE SETUP (NEW SCHEMA) ----------
+# ---------- DATABASE SETUP ----------
 def init_db():
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
 
-    # Drop old tables to ensure clean new schema
+    # Drop old tables to recreate with new schema
     c.execute("DROP TABLE IF EXISTS recipes")
     c.execute("DROP TABLE IF EXISTS batches")
     c.execute("DROP TABLE IF EXISTS seq_counter")
+    c.execute("DROP TABLE IF EXISTS colour_codes")
 
-    # --- Recipes: colour_code is a category, colour_name is unique within that code ---
+    # --- Colour Codes table ---
+    c.execute('''CREATE TABLE colour_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL,
+                    description TEXT
+                )''')
+
+    # --- Recipes: references colour_codes.id ---
     c.execute('''CREATE TABLE recipes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    colour_code TEXT NOT NULL,
+                    colour_code_id INTEGER NOT NULL,
                     colour_name TEXT NOT NULL,
                     tsc_min REAL, tsc_max REAL, ph_min REAL, ph_max REAL,
                     visc_min REAL, visc_max REAL, de_max REAL,
                     dl_tolerance REAL DEFAULT 0.5, da_tolerance REAL DEFAULT 0.6,
                     db_tolerance REAL DEFAULT 0.6, strength_min REAL DEFAULT 95.0,
                     strength_max REAL DEFAULT 105.0,
-                    UNIQUE(colour_code, colour_name)
+                    UNIQUE(colour_code_id, colour_name),
+                    FOREIGN KEY(colour_code_id) REFERENCES colour_codes(id) ON DELETE CASCADE
                 )''')
 
-    # --- Batches: recipe_id references recipes.id ---
+    # --- Batches: store colour_code string for easy filtering ---
     c.execute('''CREATE TABLE batches (
                     batch_id TEXT PRIMARY KEY,
                     batch_number TEXT UNIQUE,
@@ -68,7 +77,7 @@ def init_db():
                     FOREIGN KEY(recipe_id) REFERENCES recipes(id)
                 )''')
 
-    # --- Seq counter (if needed for batch numbering) ---
+    # --- Seq counter (for batch numbering) ---
     c.execute('''CREATE TABLE seq_counter (
                     colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
                 )''')
@@ -91,7 +100,7 @@ def init_db():
                     recipe_id INTEGER
                 )''')
 
-    # Seed default users if table empty
+    # Seed default users if empty
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         default_users = [
@@ -100,6 +109,17 @@ def init_db():
             ("qa", "qa123", "QA")
         ]
         c.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)", default_users)
+
+    # Insert some sample colour codes
+    c.execute("SELECT COUNT(*) FROM colour_codes")
+    if c.fetchone()[0] == 0:
+        sample_codes = [
+            ("RED", "Red shades"),
+            ("BLUE", "Blue shades"),
+            ("GREEN", "Green shades"),
+            ("YELLOW", "Yellow shades")
+        ]
+        c.executemany("INSERT INTO colour_codes (code, description) VALUES (?,?)", sample_codes)
 
     conn.commit()
     conn.close()
@@ -115,9 +135,65 @@ def add_log(username, action, details, batch_number=None, recipe_id=None):
     conn.close()
 
 # ---------- DATABASE FUNCTIONS ----------
+def get_colour_codes():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM colour_codes ORDER BY code", conn)
+    conn.close()
+    return df
+
+def add_colour_code(code, description, username):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO colour_codes (code, description) VALUES (?,?)", (code, description))
+        conn.commit()
+        conn.close()
+        add_log(username, "Add Colour Code", f"Added colour code {code}")
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+def update_colour_code(code_id, code, description, username):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE colour_codes SET code=?, description=? WHERE id=?", (code, description, code_id))
+        conn.commit()
+        conn.close()
+        add_log(username, "Update Colour Code", f"Updated colour code {code}")
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+def delete_colour_code(code_id, username):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    # Check if any recipes use this colour code
+    c.execute("SELECT COUNT(*) FROM recipes WHERE colour_code_id = ?", (code_id,))
+    if c.fetchone()[0] > 0:
+        conn.close()
+        return False, "Cannot delete: there are recipes using this colour code."
+    c.execute("DELETE FROM colour_codes WHERE id = ?", (code_id,))
+    conn.commit()
+    conn.close()
+    add_log(username, "Delete Colour Code", f"Deleted colour code ID {code_id}")
+    return True, ""
+
 def get_recipes():
     conn = sqlite3.connect('pigment.db')
-    df = pd.read_sql_query("SELECT id, colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max, visc_min, visc_max, de_max, dl_tolerance, da_tolerance, db_tolerance, strength_min, strength_max FROM recipes ORDER BY colour_code, colour_name", conn)
+    query = """
+        SELECT r.id, r.colour_code_id, cc.code as colour_code, r.colour_name,
+               r.tsc_min, r.tsc_max, r.ph_min, r.ph_max,
+               r.visc_min, r.visc_max, r.de_max,
+               r.dl_tolerance, r.da_tolerance, r.db_tolerance,
+               r.strength_min, r.strength_max
+        FROM recipes r
+        JOIN colour_codes cc ON r.colour_code_id = cc.id
+        ORDER BY cc.code, r.colour_name
+    """
+    df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
@@ -127,41 +203,21 @@ def get_recipe_by_id(recipe_id):
     conn.close()
     return df
 
-def get_batches():
-    conn = sqlite3.connect('pigment.db')
-    df = pd.read_sql_query("SELECT * FROM batches ORDER BY created_at DESC", conn)
-    conn.close()
-    return df
-
-def get_completed_batches():
-    conn = sqlite3.connect('pigment.db')
-    df = pd.read_sql_query("SELECT * FROM batches WHERE status = 'Completed' ORDER BY created_at DESC", conn)
-    conn.close()
-    return df
-
-def batch_exists(batch_number):
-    conn = sqlite3.connect('pigment.db')
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM batches WHERE batch_number = ?", (batch_number,))
-    exists = c.fetchone() is not None
-    conn.close()
-    return exists
-
-def add_recipe(colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max,
+def add_recipe(colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max, username):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     try:
-        c.execute("""INSERT INTO recipes (colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max,
+        c.execute("""INSERT INTO recipes (colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                      visc_min, visc_max, de_max, dl_tolerance, da_tolerance, db_tolerance,
                      strength_min, strength_max)
                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (colour_code, colour_name, tsc_min, tsc_max, ph_min, ph_max,
+                  (colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                    visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max))
         recipe_id = c.lastrowid
         conn.commit()
         conn.close()
-        add_log(username, "Add Recipe", f"Added recipe {colour_code} - {colour_name}", recipe_id=recipe_id)
+        add_log(username, "Add Recipe", f"Added recipe {colour_name} (colour code ID {colour_code_id})", recipe_id=recipe_id)
         return True, recipe_id
     except sqlite3.IntegrityError:
         conn.close()
@@ -192,6 +248,27 @@ def delete_recipe(recipe_id, username):
     conn.commit()
     conn.close()
     add_log(username, "Delete Recipe", f"Deleted recipe ID {recipe_id}", recipe_id=recipe_id)
+
+# ---------- BATCH FUNCTIONS (unchanged) ----------
+def get_batches():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM batches ORDER BY created_at DESC", conn)
+    conn.close()
+    return df
+
+def get_completed_batches():
+    conn = sqlite3.connect('pigment.db')
+    df = pd.read_sql_query("SELECT * FROM batches WHERE status = 'Completed' ORDER BY created_at DESC", conn)
+    conn.close()
+    return df
+
+def batch_exists(batch_number):
+    conn = sqlite3.connect('pigment.db')
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM batches WHERE batch_number = ?", (batch_number,))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
 
 def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username):
     conn = sqlite3.connect('pigment.db')
@@ -306,7 +383,7 @@ def export_db_to_zip():
     conn = sqlite3.connect('pigment.db')
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for table in ['recipes', 'batches', 'seq_counter', 'users', 'logs']:
+        for table in ['colour_codes', 'recipes', 'batches', 'seq_counter', 'users', 'logs']:
             try:
                 df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
                 csv_data = df.to_csv(index=False).encode('utf-8')
@@ -321,7 +398,7 @@ def import_db_from_zip(zip_file):
     conn = sqlite3.connect('pigment.db')
     c = conn.cursor()
     with zipfile.ZipFile(zip_file, 'r') as zipf:
-        for table in ['recipes', 'batches', 'seq_counter', 'users', 'logs']:
+        for table in ['colour_codes', 'recipes', 'batches', 'seq_counter', 'users', 'logs']:
             if f"{table}.csv" in zipf.namelist():
                 df = pd.read_csv(zipf.open(f"{table}.csv"))
                 c.execute(f"DELETE FROM {table}")
@@ -329,7 +406,7 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION ----------
+# ---------- COA GENERATION (unchanged) ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
     try:
         all_batches = get_batches()
@@ -565,162 +642,196 @@ if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
-        # ---- Get existing colour codes for dropdown ----
-        recipes_df = get_recipes()
-        existing_codes = recipes_df['colour_code'].unique().tolist() if not recipes_df.empty else []
-        colour_options = sorted(existing_codes) + ["+ Add New Colour Code..."]
+        # ---- COLOUR CODE MANAGEMENT ----
+        st.subheader("🎨 Manage Colour Codes (Major Colours)")
+        colour_codes_df = get_colour_codes()
 
-        # ---- New Recipe Form ----
-        with st.form("new_recipe_form"):
-            st.subheader("➕ Create New Recipe")
-            col_code = st.selectbox(
-                "Colour Code (Major Colour)",
-                options=colour_options,
-                help="Select an existing colour code or choose '+ Add New Colour Code...' to create a new one."
-            )
-            # If "Add New" selected, show text input
-            show_new_code = (col_code == "+ Add New Colour Code...")
-            if show_new_code:
-                new_col_code = st.text_input("Enter New Colour Code", value="", placeholder="e.g. RED, BLUE, GREEN")
-                final_col_code = new_col_code.strip() if new_col_code else ""
-            else:
-                final_col_code = col_code
-
-            col_name = st.text_input("Colour Name (Recipe Name)", placeholder="e.g. Red Oxide 123")
-
-            st.subheader("📊 Basic QC Specs (Ranges)")
-            col1, col2 = st.columns(2)
-            with col1:
-                tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
-                ph_min = st.number_input("pH Min", value=8.0, step=0.1)
-                visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)
-            with col2:
-                tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
-                ph_max = st.number_input("pH Max", value=9.0, step=0.1)
-                visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)
-
-            st.subheader("🎨 Colouristic Properties")
-            col1, col2 = st.columns(2)
-            with col1:
-                de_max = st.number_input("DE Max (≤ value)", value=1.0, step=0.01)
-                dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1)
-                da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1)
-            with col2:
-                db_tol = st.number_input("Db Tolerance (±)", value=0.6, step=0.1)
-                str_min = st.number_input("Strength Min %", value=95.0, step=1.0)
-                str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
-
-            if st.form_submit_button("💾 Save Recipe"):
-                if not final_col_code:
-                    st.error("❌ Colour Code is required.")
-                elif not col_name:
-                    st.error("❌ Colour Name is required.")
-                else:
-                    # Check if the combination (colour_code, colour_name) already exists
-                    existing = recipes_df[(recipes_df['colour_code'] == final_col_code) & (recipes_df['colour_name'] == col_name)]
-                    if not existing.empty:
-                        st.error(f"❌ Recipe '{final_col_code} - {col_name}' already exists.")
-                    else:
-                        success, recipe_id = add_recipe(final_col_code, col_name, tsc_min, tsc_max, ph_min, ph_max,
-                                                       visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
-                                                       str_min, str_max, st.session_state.username)
-                        if success:
-                            st.toast(f"✅ Recipe '{final_col_code} - {col_name}' saved!", icon="✅")
+        # Add new colour code
+        with st.expander("➕ Add New Colour Code", expanded=False):
+            with st.form("add_colour_code_form"):
+                new_code = st.text_input("Colour Code (e.g., RED)", max_chars=20)
+                new_desc = st.text_input("Description (optional)")
+                if st.form_submit_button("Add Colour Code"):
+                    if new_code:
+                        if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
+                            st.success(f"✅ Colour code {new_code.upper()} added!")
                             st.rerun()
                         else:
-                            st.error("❌ Failed to add recipe. Possibly duplicate combination.")
+                            st.error(f"❌ Colour code {new_code.upper()} already exists!")
+                    else:
+                        st.error("❌ Colour Code cannot be empty.")
 
-        # ---- Existing Recipes with Search and Sort ----
-        st.subheader("📋 Existing Recipes")
+        # Edit/Delete existing colour codes
+        if not colour_codes_df.empty:
+            st.dataframe(colour_codes_df, use_container_width=True, column_config={
+                "id": "ID",
+                "code": "Code",
+                "description": "Description"
+            })
+
+            # Edit or delete
+            selected_code_id = st.selectbox(
+                "Select Colour Code to Edit/Delete",
+                options=colour_codes_df['id'].tolist(),
+                format_func=lambda x: f"{colour_codes_df[colour_codes_df['id']==x]['code'].iloc[0]}"
+            )
+            if selected_code_id:
+                code_row = colour_codes_df[colour_codes_df['id'] == selected_code_id].iloc[0]
+                with st.expander(f"✏️ Edit {code_row['code']}"):
+                    with st.form("edit_colour_code_form"):
+                        edit_code = st.text_input("Colour Code", value=code_row['code'])
+                        edit_desc = st.text_input("Description", value=code_row['description'] or "")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("✅ Update"):
+                                if edit_code:
+                                    if update_colour_code(selected_code_id, edit_code.upper(), edit_desc, st.session_state.username):
+                                        st.success("✅ Updated!")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Code already exists or invalid.")
+                                else:
+                                    st.error("❌ Code cannot be empty.")
+                        with col2:
+                            if st.form_submit_button("🗑️ Delete", type="primary"):
+                                success, msg = delete_colour_code(selected_code_id, st.session_state.username)
+                                if success:
+                                    st.success("✅ Deleted!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+        else:
+            st.info("No colour codes defined yet. Add one above.")
+
+        st.divider()
+
+        # ---- RECIPE MANAGEMENT (Tree View) ----
+        st.subheader("📋 Recipes (Tree View by Colour Code)")
+
+        # Get all recipes with colour code info
+        recipes_df = get_recipes()
 
         # Search bar
-        search_term = st.text_input("🔍 Search by Colour Code or Name", placeholder="Type to filter...")
+        search_term = st.text_input("🔍 Search Recipes by Colour Code or Name", placeholder="Type to filter...")
         if search_term:
-            filtered_df = recipes_df[
+            recipes_df = recipes_df[
                 recipes_df['colour_code'].str.contains(search_term, case=False) |
                 recipes_df['colour_name'].str.contains(search_term, case=False)
             ]
+
+        if recipes_df.empty:
+            st.info("No recipes found.")
         else:
-            filtered_df = recipes_df
+            # Group by colour code
+            grouped = recipes_df.groupby('colour_code')
+            for colour_code, group in grouped:
+                with st.expander(f"🎨 {colour_code} ({len(group)} recipes)", expanded=False):
+                    # Show each recipe in this group
+                    for _, recipe in group.iterrows():
+                        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                        with col1:
+                            st.write(f"**{recipe['colour_name']}**")
+                            st.caption(f"ID: {recipe['id']}")
+                        with col2:
+                            st.write(f"TSC: {recipe['tsc_min']:.1f}-{recipe['tsc_max']:.1f}%")
+                            st.write(f"pH: {recipe['ph_min']:.1f}-{recipe['ph_max']:.1f}")
+                        with col3:
+                            st.write(f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP")
+                            st.write(f"DE: ≤{recipe['de_max']:.2f}")
+                        with col4:
+                            # Edit button opens a popup (we'll use a form in a temporary expander)
+                            if st.button(f"✏️ Edit", key=f"edit_{recipe['id']}"):
+                                st.session_state['edit_recipe_id'] = recipe['id']
+                                st.rerun()
+                            if st.button(f"🗑️ Delete", key=f"del_{recipe['id']}"):
+                                delete_recipe(recipe['id'], st.session_state.username)
+                                st.success(f"✅ Recipe '{recipe['colour_name']}' deleted!")
+                                st.rerun()
 
-        if filtered_df.empty:
-            st.info("No recipes match the search criteria.")
-        else:
-            # Display with sorting (clickable column headers)
-            st.dataframe(filtered_df, use_container_width=True, column_config={
-                "id": "ID",
-                "colour_code": "Colour Code",
-                "colour_name": "Colour Name",
-                "tsc_min": st.column_config.NumberColumn("TSC Min", format="%.1f"),
-                "tsc_max": st.column_config.NumberColumn("TSC Max", format="%.1f"),
-                "ph_min": st.column_config.NumberColumn("pH Min", format="%.1f"),
-                "ph_max": st.column_config.NumberColumn("pH Max", format="%.1f"),
-                "visc_min": st.column_config.NumberColumn("Visc Min", format="%.0f"),
-                "visc_max": st.column_config.NumberColumn("Visc Max", format="%.0f"),
-                "de_max": st.column_config.NumberColumn("DE Max", format="%.2f"),
-                "dl_tolerance": st.column_config.NumberColumn("DL Tol", format="%.1f"),
-                "da_tolerance": st.column_config.NumberColumn("Da Tol", format="%.1f"),
-                "db_tolerance": st.column_config.NumberColumn("Db Tol", format="%.1f"),
-                "strength_min": st.column_config.NumberColumn("Str Min", format="%.0f"),
-                "strength_max": st.column_config.NumberColumn("Str Max", format="%.0f"),
-            })
-
-            # Export CSV (filtered data)
-            csv = filtered_df.to_csv(index=False)
-            st.download_button(
-                label="⬇ Export Filtered Recipes as CSV",
-                data=csv,
-                file_name=f"recipes_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-
-            # ---- Edit / Delete ----
-            st.subheader("✏️ Edit or Delete Recipe")
-            if not filtered_df.empty:
-                selected_id = st.selectbox(
-                    "Select Recipe to Edit/Delete",
-                    options=filtered_df['id'].tolist(),
-                    format_func=lambda x: f"{filtered_df[filtered_df['id']==x]['colour_code'].iloc[0]} - {filtered_df[filtered_df['id']==x]['colour_name'].iloc[0]}"
-                )
-                if selected_id:
-                    recipe_row = filtered_df[filtered_df['id'] == selected_id].iloc[0]
-                    with st.expander(f"✏️ Edit {recipe_row['colour_code']} - {recipe_row['colour_name']}"):
+            # If an edit is triggered, show edit form
+            if 'edit_recipe_id' in st.session_state:
+                edit_id = st.session_state['edit_recipe_id']
+                recipe_to_edit = recipes_df[recipes_df['id'] == edit_id]
+                if not recipe_to_edit.empty:
+                    recipe = recipe_to_edit.iloc[0]
+                    with st.expander(f"✏️ Editing {recipe['colour_name']}", expanded=True):
                         with st.form("edit_recipe_form"):
-                            # Show colour code as disabled text
-                            st.text_input("Colour Code", value=recipe_row['colour_code'], disabled=True)
-                            edit_colour_name = st.text_input("Colour Name", value=recipe_row['colour_name'])
-                            edit_tsc_min = st.number_input("TSC Min", value=float(recipe_row['tsc_min']), step=0.1)
-                            edit_tsc_max = st.number_input("TSC Max", value=float(recipe_row['tsc_max']), step=0.1)
-                            edit_ph_min = st.number_input("pH Min", value=float(recipe_row['ph_min']), step=0.1)
-                            edit_ph_max = st.number_input("pH Max", value=float(recipe_row['ph_max']), step=0.1)
-                            edit_visc_min = st.number_input("Viscosity Min", value=float(recipe_row['visc_min']), step=10.0)
-                            edit_visc_max = st.number_input("Viscosity Max", value=float(recipe_row['visc_max']), step=10.0)
-                            edit_de_max = st.number_input("DE Max", value=float(recipe_row['de_max']), step=0.01)
-                            edit_dl_tol = st.number_input("DL Tolerance", value=float(recipe_row['dl_tolerance']), step=0.1)
-                            edit_da_tol = st.number_input("Da Tolerance", value=float(recipe_row['da_tolerance']), step=0.1)
-                            edit_db_tol = st.number_input("Db Tolerance", value=float(recipe_row['db_tolerance']), step=0.1)
-                            edit_str_min = st.number_input("Strength Min", value=float(recipe_row['strength_min']), step=1.0)
-                            edit_str_max = st.number_input("Strength Max", value=float(recipe_row['strength_max']), step=1.0)
+                            # Colour code is not editable here; we could allow changing it, but keep simple
+                            st.text_input("Colour Code", value=recipe['colour_code'], disabled=True)
+                            edit_colour_name = st.text_input("Colour Name", value=recipe['colour_name'])
+                            edit_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']), step=0.1)
+                            edit_tsc_max = st.number_input("TSC Max", value=float(recipe['tsc_max']), step=0.1)
+                            edit_ph_min = st.number_input("pH Min", value=float(recipe['ph_min']), step=0.1)
+                            edit_ph_max = st.number_input("pH Max", value=float(recipe['ph_max']), step=0.1)
+                            edit_visc_min = st.number_input("Viscosity Min", value=float(recipe['visc_min']), step=10.0)
+                            edit_visc_max = st.number_input("Viscosity Max", value=float(recipe['visc_max']), step=10.0)
+                            edit_de_max = st.number_input("DE Max", value=float(recipe['de_max']), step=0.01)
+                            edit_dl_tol = st.number_input("DL Tolerance", value=float(recipe['dl_tolerance']), step=0.1)
+                            edit_da_tol = st.number_input("Da Tolerance", value=float(recipe['da_tolerance']), step=0.1)
+                            edit_db_tol = st.number_input("Db Tolerance", value=float(recipe['db_tolerance']), step=0.1)
+                            edit_str_min = st.number_input("Strength Min", value=float(recipe['strength_min']), step=1.0)
+                            edit_str_max = st.number_input("Strength Max", value=float(recipe['strength_max']), step=1.0)
 
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.form_submit_button("✅ Update Recipe"):
-                                    update_recipe(selected_id, edit_colour_name,
-                                                  edit_tsc_min, edit_tsc_max,
-                                                  edit_ph_min, edit_ph_max,
-                                                  edit_visc_min, edit_visc_max,
-                                                  edit_de_max, edit_dl_tol, edit_da_tol,
-                                                  edit_db_tol, edit_str_min, edit_str_max,
-                                                  st.session_state.username)
-                                    st.toast(f"✅ Recipe updated!", icon="✅")
-                                    st.rerun()
-                            with col2:
-                                if st.form_submit_button("🗑️ Delete Recipe", type="primary"):
-                                    delete_recipe(selected_id, st.session_state.username)
-                                    st.toast(f"🗑️ Recipe deleted!", icon="🗑️")
-                                    st.rerun()
+                            if st.form_submit_button("Update Recipe"):
+                                update_recipe(edit_id, edit_colour_name,
+                                              edit_tsc_min, edit_tsc_max,
+                                              edit_ph_min, edit_ph_max,
+                                              edit_visc_min, edit_visc_max,
+                                              edit_de_max, edit_dl_tol, edit_da_tol,
+                                              edit_db_tol, edit_str_min, edit_str_max,
+                                              st.session_state.username)
+                                st.success("✅ Recipe updated!")
+                                del st.session_state['edit_recipe_id']
+                                st.rerun()
+
+        # ---- Add New Recipe ----
+        st.subheader("➕ Add New Recipe")
+        with st.form("add_recipe_form"):
+            # Choose colour code from existing ones
+            colour_codes = get_colour_codes()
+            if colour_codes.empty:
+                st.warning("Please add a colour code first.")
             else:
-                st.info("No recipes to edit.")
+                colour_code_options = {f"{row['code']}": row['id'] for _, row in colour_codes.iterrows()}
+                selected_colour = st.selectbox("Colour Code", options=list(colour_code_options.keys()))
+                colour_code_id = colour_code_options[selected_colour]
+
+                col_name = st.text_input("Colour Name (Recipe Name)", placeholder="e.g. Red Oxide 123")
+
+                st.subheader("📊 Basic QC Specs (Ranges)")
+                col1, col2 = st.columns(2)
+                with col1:
+                    tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
+                    ph_min = st.number_input("pH Min", value=8.0, step=0.1)
+                    visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)
+                with col2:
+                    tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
+                    ph_max = st.number_input("pH Max", value=9.0, step=0.1)
+                    visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)
+
+                st.subheader("🎨 Colouristic Properties")
+                col1, col2 = st.columns(2)
+                with col1:
+                    de_max = st.number_input("DE Max (≤ value)", value=1.0, step=0.01)
+                    dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1)
+                    da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1)
+                with col2:
+                    db_tol = st.number_input("Db Tolerance (±)", value=0.6, step=0.1)
+                    str_min = st.number_input("Strength Min %", value=95.0, step=1.0)
+                    str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
+
+                if st.form_submit_button("💾 Save Recipe"):
+                    if not col_name:
+                        st.error("❌ Colour Name is required.")
+                    else:
+                        success, recipe_id = add_recipe(colour_code_id, col_name, tsc_min, tsc_max, ph_min, ph_max,
+                                                       visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
+                                                       str_min, str_max, st.session_state.username)
+                        if success:
+                            st.toast(f"✅ Recipe '{col_name}' saved!", icon="✅")
+                            st.rerun()
+                        else:
+                            st.error("❌ Recipe already exists for this colour code.")
 
         # ---- Backup / Restore ----
         st.divider()
