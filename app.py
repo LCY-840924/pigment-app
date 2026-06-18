@@ -11,7 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# ---------- QR DECODER (with robust RGB conversion) ----------
+# ---------- QR DECODER ----------
 try:
     from PIL import Image
     import pyzbar.pyzbar as pyzbar
@@ -20,11 +20,9 @@ except ImportError:
     QR_AVAILABLE = False
 
 def decode_qr_from_image(image):
-    """Decode QR code from a PIL Image. Returns decoded string or None."""
     if not QR_AVAILABLE:
         return None
     try:
-        # Convert to RGB to avoid issues with PNG/JPEG modes
         rgb_image = image.convert('RGB')
         decoded_objects = pyzbar.decode(rgb_image)
         for obj in decoded_objects:
@@ -65,7 +63,6 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS seq_counter (
                     colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
                 )''')
-    # Add missing columns safely
     for col in ['tsc_min', 'tsc_max', 'ph_min', 'ph_max', 'visc_min', 'visc_max', 'de_max']:
         try:
             c.execute(f"ALTER TABLE recipes ADD COLUMN {col} REAL")
@@ -254,8 +251,8 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION (TIARCO FORMAT) ----------
-def generate_coa_pdf(batch_number):
+# ---------- COA GENERATION (with date fix and editable fields) ----------
+def generate_coa_pdf(batch_number, prepared_by, reviewed_by):
     try:
         all_batches = get_batches()
         batch_df = all_batches[all_batches['batch_number'] == batch_number]
@@ -268,17 +265,31 @@ def generate_coa_pdf(batch_number):
             return None
         recipe = recipe_df.iloc[0]
 
-        # Parse dates
-        mfg_date = datetime.strptime(batch['manufacturing_date'], "%Y-%m-%d")
+        # ---- FIX: robust date parsing ----
+        mfg_val = batch['manufacturing_date']
+        if pd.isna(mfg_val) or mfg_val is None:
+            mfg_date = datetime.now()
+        else:
+            try:
+                # If it's a float (timestamp) or string
+                if isinstance(mfg_val, (int, float)):
+                    mfg_date = datetime.fromtimestamp(mfg_val)
+                else:
+                    mfg_date = pd.to_datetime(mfg_val)
+            except:
+                mfg_date = datetime.now()
+        # If it's a pandas Timestamp, convert to datetime
+        if hasattr(mfg_date, 'to_pydatetime'):
+            mfg_date = mfg_date.to_pydatetime()
+
         expiry_date = mfg_date + pd.DateOffset(months=18)
         mfg_str = mfg_date.strftime("%d.%m.%Y")
         expiry_str = expiry_date.strftime("%d.%m.%Y")
 
-        # Results rows (order: pH, TSC, Viscosity, DL, Da, Db, DE, Colour Strength)
         results = [
             ("pH", f"{recipe['ph_min']:.2f} - {recipe['ph_max']:.2f}", f"{batch['ph']:.2f}"),
             ("TSC", f"{recipe['tsc_min']:.0f}-{recipe['tsc_max']:.0f}%", f"{batch['tsc']:.2f}%"),
-            ("Viscosity", "Paste", "Paste"),   # as per sample
+            ("Viscosity", "Paste", "Paste"),
             ("DL", f"± {recipe['dl_tolerance']:.1f}", f"{batch['dl']:.2f}"),
             ("Da", f"± {recipe['da_tolerance']:.1f}", f"{batch['da']:.2f}"),
             ("Db", f"± {recipe['db_tolerance']:.1f}", f"{batch['db']:.2f}"),
@@ -293,7 +304,7 @@ def generate_coa_pdf(batch_number):
         styles = getSampleStyleSheet()
         story = []
 
-        # ---- HEADER (Company details) ----
+        # ---- HEADER ----
         header_style = ParagraphStyle('Header', parent=styles['Normal'],
                                       fontSize=10, leading=12, alignment=1)
         company_lines = [
@@ -313,7 +324,7 @@ def generate_coa_pdf(batch_number):
                                      fontSize=16, alignment=1, spaceAfter=12)
         story.append(Paragraph("PROVISIONAL CERTIFICATE OF ANALYSIS", title_style))
 
-        # ---- TOP TABLE (Product, Batch, Dates) ----
+        # ---- TOP TABLE ----
         top_data = [
             ["Product:", recipe['colour_name']],
             ["Batch No.:", batch['batch_number']],
@@ -333,7 +344,7 @@ def generate_coa_pdf(batch_number):
         story.append(top_table)
         story.append(Spacer(1, 12))
 
-        # ---- MAIN RESULTS TABLE ----
+        # ---- MAIN TABLE ----
         data = [["PARAMETER", "SPECIFICATION", "RESULT"]]
         for param, spec, result in results:
             data.append([param, spec, result])
@@ -353,11 +364,11 @@ def generate_coa_pdf(batch_number):
         story.append(main_table)
         story.append(Spacer(1, 20))
 
-        # ---- BOTTOM TABLE (Date, Prepared, Approved) ----
+        # ---- BOTTOM TABLE ----
         bottom_data = [
             ["Date:", mfg_str],
-            ["Prepared by:", "MOKHJY"],        # change as needed
-            ["Reviewed & approved by:", "MOKHJY"]
+            ["Prepared by:", prepared_by],
+            ["Reviewed & approved by:", reviewed_by]
         ]
         bottom_table = Table(bottom_data, colWidths=[120, 250])
         bottom_table.setStyle(TableStyle([
@@ -439,7 +450,6 @@ if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
-        # ---- New Recipe Form ----
         with st.form("new_recipe_form"):
             col_code = st.text_input("Colour Code (e.g., RED, PIG-001)")
             col_name = st.text_input("Colour Name", "Red Oxide")
@@ -480,7 +490,6 @@ if is_admin():
         if not recipes_df.empty:
             st.dataframe(recipes_df, use_container_width=True)
 
-            # Export CSV
             csv = recipes_df.to_csv(index=False)
             st.download_button(
                 label="⬇ Export Recipes as CSV",
@@ -489,7 +498,6 @@ if is_admin():
                 mime="text/csv"
             )
 
-            # Edit / Delete
             st.subheader("✏️ Edit or Delete Recipe")
             selected_recipe = st.selectbox("Select Recipe to Edit/Delete",
                                            recipes_df['colour_code'].tolist())
@@ -555,7 +563,7 @@ if is_admin():
         else:
             st.info("No recipes defined yet.")
 
-        # ---- Backup / Restore (Admin only) ----
+        # ---- Backup / Restore ----
         st.divider()
         st.subheader("💾 Backup / Restore Database")
         col1, col2 = st.columns(2)
@@ -580,7 +588,7 @@ if is_admin():
                     except Exception as e:
                         st.error(f"❌ Restore failed: {str(e)}")
 
-# ---------- TAB 2 / 3: ISSUE BATCH (ADMIN & PRODUCTION) ----------
+# ---------- TAB 2 / 3: ISSUE BATCH ----------
 if is_admin() or is_production():
     tab_idx = 1 if is_admin() else 0
     with tabs[tab_idx]:
@@ -589,7 +597,7 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Code Scanner (Camera) ----
+            # ---- QR Scanner ----
             st.subheader("📷 Scan QR with Camera")
             if not QR_AVAILABLE:
                 st.warning(
@@ -620,7 +628,7 @@ if is_admin() or is_production():
                     except Exception as e:
                         st.error(f"❌ Error processing image: {e}")
 
-            # ---- Manual QR text input (fallback) ----
+            # ---- Manual QR text ----
             st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input(
                 "Paste QR code content (format: recipeName_batchNumber)",
@@ -686,14 +694,13 @@ if is_admin() or is_production():
                     else:
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
-                        # Clear QR session data
                         if 'qr_recipe' in st.session_state:
                             del st.session_state['qr_recipe']
                         if 'qr_batch' in st.session_state:
                             del st.session_state['qr_batch']
                         st.rerun()
 
-# ---------- TAB 3 / 4: QA TESTING (ADMIN & QA) ----------
+# ---------- TAB 3 / 4: QA TESTING ----------
 if is_admin() or is_qa():
     tab_idx = 2 if is_admin() else 0
     with tabs[tab_idx]:
@@ -732,7 +739,7 @@ if is_admin() or is_qa():
         else:
             st.info("No batches waiting for QA.")
 
-# ---------- WIP PROGRESS (ALL ROLES) ----------
+# ---------- WIP PROGRESS ----------
 wip_index = next(i for i, name in enumerate(tabs_list) if name == "WIP Progress")
 with tabs[wip_index]:
     st.header("📋 4. Live WIP Progress")
@@ -785,7 +792,7 @@ with tabs[wip_index]:
                 else:
                     st.write("(Read Only)")
 
-# ---------- REPORTS TAB (ALL ROLES) ----------
+# ---------- REPORTS TAB ----------
 report_index = next(i for i, name in enumerate(tabs_list) if name == "📊 Reports")
 with tabs[report_index]:
     st.header("📊 Reports & Analytics")
@@ -848,9 +855,10 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ---- COA Generation ----
+    # ---- COA Generation (with preview & editable fields) ----
     with report_tabs[1]:
-        st.subheader("📄 Certificate of Analysis (COA) - PDF")
+        st.subheader("📄 Certificate of Analysis (COA) - PDF with Preview")
+
         completed_list = get_completed_batches()
         if completed_list.empty:
             st.info("No completed batches available for COA generation.")
@@ -859,18 +867,101 @@ with tabs[report_index]:
                              for _, row in completed_list.iterrows()}
             selected_batch = st.selectbox("Select Batch for COA", list(batch_options.keys()))
             batch_num = batch_options[selected_batch]
-            if st.button("📑 Generate COA PDF", type="primary"):
-                pdf_buffer = generate_coa_pdf(batch_num)
-                if pdf_buffer:
-                    st.download_button(
-                        label="⬇ Download COA (PDF)",
-                        data=pdf_buffer,
-                        file_name=f"COA_{batch_num}.pdf",
-                        mime="application/pdf"
-                    )
-                    st.success("✅ COA generated successfully! Click the download button above.")
-                else:
-                    st.error("❌ Failed to generate COA. Please check that the batch has all required data.")
+
+            # ---- Editable fields ----
+            prepared_by = st.text_input("Prepared by", value="MOKHJY")
+            reviewed_by = st.text_input("Reviewed & approved by", value="MOKHJY")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("📋 Preview COA", type="secondary"):
+                    # Show preview in app
+                    all_batches = get_batches()
+                    batch_df = all_batches[all_batches['batch_number'] == batch_num]
+                    if not batch_df.empty:
+                        batch = batch_df.iloc[0]
+                        recipe_df = get_recipe_by_id(batch['recipe_id'])
+                        if not recipe_df.empty:
+                            recipe = recipe_df.iloc[0]
+                            # Reuse the same date parsing
+                            mfg_val = batch['manufacturing_date']
+                            if pd.isna(mfg_val) or mfg_val is None:
+                                mfg_date = datetime.now()
+                            else:
+                                try:
+                                    if isinstance(mfg_val, (int, float)):
+                                        mfg_date = datetime.fromtimestamp(mfg_val)
+                                    else:
+                                        mfg_date = pd.to_datetime(mfg_val)
+                                except:
+                                    mfg_date = datetime.now()
+                            if hasattr(mfg_date, 'to_pydatetime'):
+                                mfg_date = mfg_date.to_pydatetime()
+                            expiry_date = mfg_date + pd.DateOffset(months=18)
+                            mfg_str = mfg_date.strftime("%d.%m.%Y")
+                            expiry_str = expiry_date.strftime("%d.%m.%Y")
+
+                            st.subheader("📄 COA Preview")
+                            st.markdown("#### TIARCO CHEMICAL (MALAYSIA) SDN. BHD.")
+                            st.markdown("199101012802 (223114-K)")
+                            st.markdown("LOT 47962, PERSIARAN TASEK, KAWASAN PERINDUSTRIAN TASEK, 31400 IPOH, PERAK, MALAYSIA.")
+                            st.markdown("TEL: 605-5412018            FAX : 605-5412716")
+                            st.markdown("---")
+                            st.markdown("# PROVISIONAL CERTIFICATE OF ANALYSIS")
+                            st.markdown("---")
+                            preview_data = {
+                                "Product": recipe['colour_name'],
+                                "Batch No.": batch['batch_number'],
+                                "Manufacturing date": mfg_str,
+                                "Expiry date": expiry_str
+                            }
+                            st.table(pd.DataFrame(preview_data.items(), columns=["", ""]))
+
+                            results_data = {
+                                "PARAMETER": ["pH", "TSC", "Viscosity", "DL", "Da", "Db", "DE", "Colour Strength"],
+                                "SPECIFICATION": [
+                                    f"{recipe['ph_min']:.2f} - {recipe['ph_max']:.2f}",
+                                    f"{recipe['tsc_min']:.0f}-{recipe['tsc_max']:.0f}%",
+                                    "Paste",
+                                    f"± {recipe['dl_tolerance']:.1f}",
+                                    f"± {recipe['da_tolerance']:.1f}",
+                                    f"± {recipe['db_tolerance']:.1f}",
+                                    f"≤ {recipe['de_max']:.1f}",
+                                    f"{recipe['strength_min']:.0f}-{recipe['strength_max']:.0f}%"
+                                ],
+                                "RESULT": [
+                                    f"{batch['ph']:.2f}",
+                                    f"{batch['tsc']:.2f}%",
+                                    "Paste",
+                                    f"{batch['dl']:.2f}",
+                                    f"{batch['da']:.2f}",
+                                    f"{batch['db']:.2f}",
+                                    f"{batch['de']:.2f}",
+                                    f"{batch['colour_strength']:.2f}%"
+                                ]
+                            }
+                            st.table(pd.DataFrame(results_data))
+
+                            bottom_data = {
+                                "": ["Date:", "Prepared by:", "Reviewed & approved by:"],
+                                "": [mfg_str, prepared_by, reviewed_by]
+                            }
+                            st.table(pd.DataFrame(bottom_data))
+
+            with col2:
+                if st.button("📑 Generate COA PDF", type="primary"):
+                    pdf_buffer = generate_coa_pdf(batch_num, prepared_by, reviewed_by)
+                    if pdf_buffer:
+                        st.download_button(
+                            label="⬇ Download COA (PDF)",
+                            data=pdf_buffer,
+                            file_name=f"COA_{batch_num}.pdf",
+                            mime="application/pdf"
+                        )
+                        st.success("✅ COA generated successfully! Click the download button above.")
+                    else:
+                        st.error("❌ Failed to generate COA. Please check that the batch has all required data.")
 
     # ---- Data Export ----
     with report_tabs[2]:
