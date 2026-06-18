@@ -254,7 +254,7 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION ----------
+# ---------- COA GENERATION (TIARCO FORMAT) ----------
 def generate_coa_pdf(batch_number):
     try:
         all_batches = get_batches()
@@ -268,63 +268,108 @@ def generate_coa_pdf(batch_number):
             return None
         recipe = recipe_df.iloc[0]
 
-        params = [
-            ("TSC (%)", f"{recipe['tsc_min']:.1f} - {recipe['tsc_max']:.1f}", batch['tsc'],
-             recipe['tsc_min'] <= batch['tsc'] <= recipe['tsc_max']),
-            ("pH", f"{recipe['ph_min']:.1f} - {recipe['ph_max']:.1f}", batch['ph'],
-             recipe['ph_min'] <= batch['ph'] <= recipe['ph_max']),
-            ("Viscosity (cP)", f"{recipe['visc_min']:.0f} - {recipe['visc_max']:.0f}", batch['visc'],
-             recipe['visc_min'] <= batch['visc'] <= recipe['visc_max']),
-            ("DE", f"≤ {recipe['de_max']:.2f}", batch['de'], batch['de'] <= recipe['de_max']),
-            ("DL", f"± {recipe['dl_tolerance']:.2f}", batch['dl'], abs(batch['dl']) <= recipe['dl_tolerance']),
-            ("Da", f"± {recipe['da_tolerance']:.2f}", batch['da'], abs(batch['da']) <= recipe['da_tolerance']),
-            ("Db", f"± {recipe['db_tolerance']:.2f}", batch['db'], abs(batch['db']) <= recipe['db_tolerance']),
-            ("Colour Strength (%)", f"{recipe['strength_min']:.0f} - {recipe['strength_max']:.0f}",
-             batch['colour_strength'], recipe['strength_min'] <= batch['colour_strength'] <= recipe['strength_max'])
+        # Parse dates
+        mfg_date = datetime.strptime(batch['manufacturing_date'], "%Y-%m-%d")
+        expiry_date = mfg_date + pd.DateOffset(months=18)
+        mfg_str = mfg_date.strftime("%d.%m.%Y")
+        expiry_str = expiry_date.strftime("%d.%m.%Y")
+
+        # Results rows (order: pH, TSC, Viscosity, DL, Da, Db, DE, Colour Strength)
+        results = [
+            ("pH", f"{recipe['ph_min']:.2f} - {recipe['ph_max']:.2f}", f"{batch['ph']:.2f}"),
+            ("TSC", f"{recipe['tsc_min']:.0f}-{recipe['tsc_max']:.0f}%", f"{batch['tsc']:.2f}%"),
+            ("Viscosity", "Paste", "Paste"),   # as per sample
+            ("DL", f"± {recipe['dl_tolerance']:.1f}", f"{batch['dl']:.2f}"),
+            ("Da", f"± {recipe['da_tolerance']:.1f}", f"{batch['da']:.2f}"),
+            ("Db", f"± {recipe['db_tolerance']:.1f}", f"{batch['db']:.2f}"),
+            ("DE", f"≤ {recipe['de_max']:.1f}", f"{batch['de']:.2f}"),
+            ("Colour Strength", f"{recipe['strength_min']:.0f}-{recipe['strength_max']:.0f}%", f"{batch['colour_strength']:.2f}%")
         ]
 
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                rightMargin=20, leftMargin=20,
+                                topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         story = []
 
-        title_style = ParagraphStyle('Title', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
-        story.append(Paragraph("CERTIFICATE OF ANALYSIS", title_style))
+        # ---- HEADER (Company details) ----
+        header_style = ParagraphStyle('Header', parent=styles['Normal'],
+                                      fontSize=10, leading=12, alignment=1)
+        company_lines = [
+            "TIARCO CHEMICAL (MALAYSIA) SDN. BHD.",
+            "199101012802 (223114-K)",
+            "LOT 47962, PERSIARAN TASEK,",
+            "KAWASAN PERINDUSTRIAN TASEK,",
+            "31400 IPOH, PERAK, MALAYSIA.",
+            "TEL: 605-5412018            FAX : 605-5412716"
+        ]
+        for line in company_lines:
+            story.append(Paragraph(line, header_style))
+        story.append(Spacer(1, 12))
 
-        info_style = styles['Normal']
-        story.append(Paragraph(f"<b>Batch Number:</b> {batch['batch_number']}", info_style))
-        story.append(Paragraph(f"<b>Colour Code:</b> {batch['colour_code']} - {recipe['colour_name']}", info_style))
-        story.append(Paragraph(f"<b>Manufacturing Date:</b> {batch['manufacturing_date']}", info_style))
-        story.append(Paragraph(f"<b>Attempt Count:</b> {batch['attempt_count']}", info_style))
-        story.append(Paragraph(f"<b>Status:</b> {batch['status']}", info_style))
-        story.append(Spacer(1, 10))
+        # ---- TITLE ----
+        title_style = ParagraphStyle('Title', parent=styles['Title'],
+                                     fontSize=16, alignment=1, spaceAfter=12)
+        story.append(Paragraph("PROVISIONAL CERTIFICATE OF ANALYSIS", title_style))
 
-        table_data = [["Parameter", "Specification", "Result", "Status"]]
-        for param, spec, result, passed in params:
-            status_text = "✅ PASS" if passed else "❌ FAIL"
-            table_data.append([param, spec, f"{result:.2f}", status_text])
+        # ---- TOP TABLE (Product, Batch, Dates) ----
+        top_data = [
+            ["Product:", recipe['colour_name']],
+            ["Batch No.:", batch['batch_number']],
+            ["Manufacturing date:", mfg_str],
+            ["Expiry date:", expiry_str]
+        ]
+        top_table = Table(top_data, colWidths=[70, 300])
+        top_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+        ]))
+        story.append(top_table)
+        story.append(Spacer(1, 12))
 
-        t = Table(table_data, colWidths=[80, 100, 80, 80])
-        t.setStyle(TableStyle([
+        # ---- MAIN RESULTS TABLE ----
+        data = [["PARAMETER", "SPECIFICATION", "RESULT"]]
+        for param, spec, result in results:
+            data.append([param, spec, result])
+
+        main_table = Table(data, colWidths=[100, 150, 100])
+        main_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
-        story.append(t)
-
+        story.append(main_table)
         story.append(Spacer(1, 20))
-        story.append(Paragraph(f"<b>Remarks:</b> {batch['remark'] or 'N/A'}", info_style))
-        story.append(Spacer(1, 10))
-        story.append(
-            Paragraph("This certificate is electronically generated and does not require a physical signature.",
-                      styles['Italic']))
-        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Italic']))
+
+        # ---- BOTTOM TABLE (Date, Prepared, Approved) ----
+        bottom_data = [
+            ["Date:", mfg_str],
+            ["Prepared by:", "MOKHJY"],        # change as needed
+            ["Reviewed & approved by:", "MOKHJY"]
+        ]
+        bottom_table = Table(bottom_data, colWidths=[120, 250])
+        bottom_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+        ]))
+        story.append(bottom_table)
 
         doc.build(story)
         buffer.seek(0)
