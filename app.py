@@ -252,7 +252,7 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION (fixed alignment & auto-fit) ----------
+# ---------- COA GENERATION (EXACT MATCH TO TEMPLATE) ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
     try:
         all_batches = get_batches()
@@ -309,7 +309,6 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             if "Viscosity" in edited_dict:
                 default_results["Viscosity"] = edited_dict["Viscosity"]
 
-        # Build results list for PDF
         results = [
             ("pH", f"{recipe['ph_min']:.2f} - {recipe['ph_max']:.2f}", f"{default_results['pH']:.2f}"),
             ("TSC", f"{recipe['tsc_min']:.0f}-{recipe['tsc_max']:.0f}%", f"{default_results['TSC']:.2f}%"),
@@ -323,16 +322,16 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-                                rightMargin=20, leftMargin=20,
-                                topMargin=20, bottomMargin=20)
+                                rightMargin=30, leftMargin=30,
+                                topMargin=30, bottomMargin=30)
         styles = getSampleStyleSheet()
         story = []
 
         # ---- HEADER (left-aligned, company name bold) ----
         header_bold_style = ParagraphStyle('HeaderBold', parent=styles['Normal'],
-                                           fontSize=10, leading=12, alignment=0)
+                                           fontSize=9, leading=11, alignment=0)  # 0 = left
         header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'],
-                                             fontSize=10, leading=12, alignment=0)
+                                             fontSize=9, leading=11, alignment=0)
 
         company_name = template.get('company_name', "TIARCO CHEMICAL (MALAYSIA) SDN. BHD.")
         reg_no = template.get('reg_no', "199101012802 (223114-K)")
@@ -348,12 +347,12 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         for line in address_lines:
             story.append(Paragraph(line, header_normal_style))
         story.append(Paragraph(phone_fax, header_normal_style))
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 10))
 
-        # ---- TITLE (left-aligned) ----
+        # ---- TITLE (centered) ----
         title_text = template.get('title', "PROVISIONAL CERTIFICATE OF ANALYSIS")
         title_style = ParagraphStyle('Title', parent=styles['Title'],
-                                     fontSize=16, alignment=0, spaceAfter=12)
+                                     fontSize=14, alignment=1, spaceAfter=10)  # 1 = center
         story.append(Paragraph(title_text, title_style))
 
         # ---- TOP TABLE (Product, Batch, Dates) ----
@@ -363,39 +362,46 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             ["Manufacturing date:", mfg_str],
             ["Expiry date:", expiry_str]
         ]
-        top_table = Table(top_data, colWidths=None)
+        # Use fixed column widths: label 30%, value 70%
+        top_table = Table(top_data, colWidths=[doc.width * 0.30, doc.width * 0.70])
         top_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
             ('BACKGROUND', (1, 0), (1, -1), colors.white),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ]))
         story.append(top_table)
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 10))
 
         # ---- MAIN RESULTS TABLE ----
         data = [["PARAMETER", "SPECIFICATION", "RESULT"]]
         for param, spec, result in results:
             data.append([param, spec, result])
 
-        main_table = Table(data, colWidths=None)
+        # Three columns equal width
+        main_table = Table(data, colWidths=[doc.width * 0.33, doc.width * 0.34, doc.width * 0.33])
         main_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+            ('TOPPADDING', (0, 0), (-1, 0), 6),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ]))
         story.append(main_table)
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 15))
 
         # ---- BOTTOM TABLE (Date, Prepared, Approved) ----
         bottom_data = [
@@ -403,16 +409,18 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             ["Prepared by:", template.get('prepared_by', 'MOKHJY')],
             ["Reviewed & approved by:", template.get('reviewed_by', 'MOKHJY')]
         ]
-        bottom_table = Table(bottom_data, colWidths=None)
+        bottom_table = Table(bottom_data, colWidths=[doc.width * 0.30, doc.width * 0.70])
         bottom_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
             ('BACKGROUND', (1, 0), (1, -1), colors.white),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ]))
         story.append(bottom_table)
 
@@ -889,7 +897,7 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ---- COA Generation (fully customizable template) ----
+    # ---- COA Generation (with editable preview) ----
     with report_tabs[1]:
         st.subheader("📄 Certificate of Analysis - Editable Preview & Custom Template")
 
