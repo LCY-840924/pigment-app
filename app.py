@@ -729,7 +729,7 @@ if is_admin() or is_production():
         if recipes.empty:
             st.warning("No recipes. Please ask Admin to add a recipe first.")
         else:
-            # ---- QR Scanner (enhanced auto‑select) ----
+            # ---- QR Scanner (enhanced: match by colour_name) ----
             st.subheader("📷 Scan QR with Camera")
             if not QR_AVAILABLE:
                 st.warning(
@@ -745,26 +745,22 @@ if is_admin() or is_production():
                         if decoded:
                             st.success(f"✅ Decoded: {decoded}")
                             parts = decoded.split('_', 1)
-                            if len(parts) == 2:
-                                qr_recipe, qr_batch = parts[0], parts[1]
-                                if not recipes[recipes['colour_code'] == qr_recipe].empty:
-                                    # Auto‑filter and auto‑select
-                                    st.session_state['qr_recipe'] = qr_recipe
-                                    st.session_state['qr_batch'] = qr_batch
-                                    st.session_state['colour_filter'] = qr_recipe  # set filter
-                                    st.rerun()
+                            qr_name_part = parts[0] if len(parts) >= 1 else decoded
+                            qr_batch = parts[1] if len(parts) == 2 else ''
+                            # Find recipe by colour_name (case-insensitive)
+                            match = recipes[recipes['colour_name'].str.lower() == qr_name_part.lower()]
+                            if not match.empty:
+                                recipe_code = match.iloc[0]['colour_code']
+                                st.session_state['qr_recipe'] = recipe_code
+                                st.session_state['qr_batch'] = qr_batch
+                                st.session_state['colour_filter'] = recipe_code
+                                if qr_batch:
+                                    st.success(f"✅ Recipe found: {match.iloc[0]['colour_name']} (Code: {recipe_code})")
                                 else:
-                                    st.error(f"❌ Recipe '{qr_recipe}' not found. Please select manually.")
+                                    st.warning(f"✅ Recipe found: {match.iloc[0]['colour_name']}. Please enter batch number manually.")
+                                st.rerun()
                             else:
-                                # No underscore – treat entire decoded as recipe name
-                                if not recipes[recipes['colour_code'] == decoded].empty:
-                                    st.session_state['qr_recipe'] = decoded
-                                    st.session_state['qr_batch'] = ''
-                                    st.session_state['colour_filter'] = decoded
-                                    st.warning("✅ Recipe auto‑detected. Please enter batch number manually.")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Could not parse QR. Expected format: 'recipeName_batchNumber' or just a recipe name.")
+                                st.error(f"❌ No recipe found with colour name '{qr_name_part}'. Please select manually.")
                         else:
                             st.error("❌ No QR code detected. Please try again.")
                     except Exception as e:
@@ -773,32 +769,27 @@ if is_admin() or is_production():
             # ---- Manual QR text (enhanced) ----
             st.subheader("📝 Or paste QR text (optional)")
             qr_input = st.text_input(
-                "Paste QR code content (format: recipeName_batchNumber or just recipe name)",
-                placeholder="e.g. RED_2026-001 or RED"
+                "Paste QR code content (format: <colour name>_<batch number> or just colour name)",
+                placeholder="e.g. HYDROFLEX APPLE GREEN 2798 FDA-M_25292817"
             )
             if qr_input:
                 try:
                     parts = qr_input.split('_', 1)
-                    if len(parts) == 2:
-                        qr_recipe, qr_batch = parts[0], parts[1]
-                        if not recipes[recipes['colour_code'] == qr_recipe].empty:
-                            st.session_state['qr_recipe'] = qr_recipe
-                            st.session_state['qr_batch'] = qr_batch
-                            st.session_state['colour_filter'] = qr_recipe
-                            st.success(f"✅ Recognised: Recipe '{qr_recipe}', Batch '{qr_batch}'")
-                            st.rerun()
+                    qr_name_part = parts[0] if len(parts) >= 1 else qr_input
+                    qr_batch = parts[1] if len(parts) == 2 else ''
+                    match = recipes[recipes['colour_name'].str.lower() == qr_name_part.lower()]
+                    if not match.empty:
+                        recipe_code = match.iloc[0]['colour_code']
+                        st.session_state['qr_recipe'] = recipe_code
+                        st.session_state['qr_batch'] = qr_batch
+                        st.session_state['colour_filter'] = recipe_code
+                        if qr_batch:
+                            st.success(f"✅ Recipe found: {match.iloc[0]['colour_name']} (Code: {recipe_code})")
                         else:
-                            st.error(f"❌ Recipe '{qr_recipe}' not found.")
+                            st.warning(f"✅ Recipe found: {match.iloc[0]['colour_name']}. Please enter batch number manually.")
+                        st.rerun()
                     else:
-                        # No underscore – treat as recipe name
-                        if not recipes[recipes['colour_code'] == qr_input].empty:
-                            st.session_state['qr_recipe'] = qr_input
-                            st.session_state['qr_batch'] = ''
-                            st.session_state['colour_filter'] = qr_input
-                            st.warning("✅ Recipe recognised. Please enter batch number manually.")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Could not parse input. Expected format: 'recipeName_batchNumber' or just a recipe name.")
+                        st.error(f"❌ No recipe found with colour name '{qr_name_part}'. Please select manually.")
                 except Exception as e:
                     st.error(f"❌ Error parsing input: {e}")
 
