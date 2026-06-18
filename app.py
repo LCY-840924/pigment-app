@@ -252,12 +252,8 @@ def import_db_from_zip(zip_file):
     conn.commit()
     conn.close()
 
-# ---------- COA GENERATION (fully customizable template) ----------
+# ---------- COA GENERATION (fixed alignment & auto-fit) ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
-    """
-    template: dict with keys: company_name, reg_no, address_lines (list), phone_fax, title
-    edited_results: DataFrame with columns PARAMETER, SPECIFICATION, RESULT
-    """
     try:
         all_batches = get_batches()
         batch_df = all_batches[all_batches['batch_number'] == batch_number]
@@ -290,7 +286,6 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         expiry_str = expiry_date.strftime("%d.%m.%Y")
 
         # ---- Prepare results ----
-        # Default: use database values
         default_results = {
             "pH": batch['ph'],
             "TSC": batch['tsc'],
@@ -302,19 +297,15 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             "Colour Strength": batch['colour_strength']
         }
 
-        # If edited results provided, merge them
         if edited_results is not None:
             edited_dict = {row['PARAMETER']: row['RESULT'] for _, row in edited_results.iterrows()}
-            # For numeric fields, try to convert to float; if fails, keep original
             numeric_params = ["pH", "TSC", "DL", "Da", "Db", "DE", "Colour Strength"]
             for param in numeric_params:
                 if param in edited_dict and edited_dict[param] != "":
                     try:
                         default_results[param] = float(edited_dict[param])
                     except ValueError:
-                        # keep original
                         pass
-            # For viscosity, just take the string
             if "Viscosity" in edited_dict:
                 default_results["Viscosity"] = edited_dict["Viscosity"]
 
@@ -337,56 +328,61 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         styles = getSampleStyleSheet()
         story = []
 
-        # ---- HEADER (customizable) ----
-        header_style = ParagraphStyle('Header', parent=styles['Normal'],
-                                      fontSize=10, leading=12, alignment=1)
-        # Company lines
-        company_lines = [
-            template.get('company_name', "TIARCO CHEMICAL (MALAYSIA) SDN. BHD."),
-            template.get('reg_no', "199101012802 (223114-K)"),
-            *template.get('address_lines', [
-                "LOT 47962, PERSIARAN TASEK,",
-                "KAWASAN PERINDUSTRIAN TASEK,",
-                "31400 IPOH, PERAK, MALAYSIA."
-            ]),
-            template.get('phone_fax', "TEL: 605-5412018            FAX : 605-5412716")
-        ]
-        for line in company_lines:
-            story.append(Paragraph(line, header_style))
+        # ---- HEADER (left-aligned, company name bold) ----
+        header_bold_style = ParagraphStyle('HeaderBold', parent=styles['Normal'],
+                                           fontSize=10, leading=12, alignment=0)
+        header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'],
+                                             fontSize=10, leading=12, alignment=0)
+
+        company_name = template.get('company_name', "TIARCO CHEMICAL (MALAYSIA) SDN. BHD.")
+        reg_no = template.get('reg_no', "199101012802 (223114-K)")
+        address_lines = template.get('address_lines', [
+            "LOT 47962, PERSIARAN TASEK,",
+            "KAWASAN PERINDUSTRIAN TASEK,",
+            "31400 IPOH, PERAK, MALAYSIA."
+        ])
+        phone_fax = template.get('phone_fax', "TEL: 605-5412018            FAX : 605-5412716")
+
+        story.append(Paragraph(f"<b>{company_name}</b>", header_bold_style))
+        story.append(Paragraph(reg_no, header_normal_style))
+        for line in address_lines:
+            story.append(Paragraph(line, header_normal_style))
+        story.append(Paragraph(phone_fax, header_normal_style))
         story.append(Spacer(1, 12))
 
-        # ---- TITLE ----
+        # ---- TITLE (left-aligned) ----
         title_text = template.get('title', "PROVISIONAL CERTIFICATE OF ANALYSIS")
         title_style = ParagraphStyle('Title', parent=styles['Title'],
-                                     fontSize=16, alignment=1, spaceAfter=12)
+                                     fontSize=16, alignment=0, spaceAfter=12)
         story.append(Paragraph(title_text, title_style))
 
-        # ---- TOP TABLE ----
+        # ---- TOP TABLE (Product, Batch, Dates) ----
         top_data = [
             ["Product:", recipe['colour_name']],
-            ["Batch No.:", batch['batch_number']],
+            ["Batch no.:", batch['batch_number']],
             ["Manufacturing date:", mfg_str],
             ["Expiry date:", expiry_str]
         ]
-        top_table = Table(top_data, colWidths=[70, 300])
+        top_table = Table(top_data, colWidths=None)
         top_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
             ('ALIGN', (1, 0), (1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('BACKGROUND', (1, 0), (1, -1), colors.white),
         ]))
         story.append(top_table)
         story.append(Spacer(1, 12))
 
-        # ---- MAIN TABLE ----
+        # ---- MAIN RESULTS TABLE ----
         data = [["PARAMETER", "SPECIFICATION", "RESULT"]]
         for param, spec, result in results:
             data.append([param, spec, result])
 
-        main_table = Table(data, colWidths=[100, 150, 100])
+        main_table = Table(data, colWidths=None)
         main_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -401,21 +397,22 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         story.append(main_table)
         story.append(Spacer(1, 20))
 
-        # ---- BOTTOM TABLE ----
+        # ---- BOTTOM TABLE (Date, Prepared, Approved) ----
         bottom_data = [
             ["Date:", mfg_str],
             ["Prepared by:", template.get('prepared_by', 'MOKHJY')],
             ["Reviewed & approved by:", template.get('reviewed_by', 'MOKHJY')]
         ]
-        bottom_table = Table(bottom_data, colWidths=[120, 250])
+        bottom_table = Table(bottom_data, colWidths=None)
         bottom_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
             ('ALIGN', (1, 0), (1, -1), 'LEFT'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('BACKGROUND', (1, 0), (1, -1), colors.white),
         ]))
         story.append(bottom_table)
 
