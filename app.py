@@ -38,85 +38,71 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'pigment.db')
 
 def get_db_connection():
-    """Return a connection to the database, ensuring the file exists."""
-    return sqlite3.connect(DB_PATH)
+    """Return a connection to the database."""
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
+    """Create tables only if they don't exist. Never drop existing data."""
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("PRAGMA foreign_keys = OFF;")
-    c.execute("DROP TABLE IF EXISTS recipes")
-    c.execute("DROP TABLE IF EXISTS batches")
-    c.execute("DROP TABLE IF EXISTS seq_counter")
-    c.execute("DROP TABLE IF EXISTS colour_codes")
-    c.execute("DROP TABLE IF EXISTS users")
-    c.execute("DROP TABLE IF EXISTS logs")
-
-    c.execute('''CREATE TABLE colour_codes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code TEXT UNIQUE NOT NULL,
-                    description TEXT
-                )''')
-
-    c.execute('''CREATE TABLE recipes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    colour_code_id INTEGER NOT NULL,
-                    colour_name TEXT NOT NULL,
-                    tsc_min REAL, tsc_max REAL, ph_min REAL, ph_max REAL,
-                    visc_min REAL, visc_max REAL, de_max REAL,
-                    dl_tolerance REAL DEFAULT 0.5, da_tolerance REAL DEFAULT 0.6,
-                    db_tolerance REAL DEFAULT 0.6, strength_min REAL DEFAULT 95.0,
-                    strength_max REAL DEFAULT 105.0,
-                    UNIQUE(colour_code_id, colour_name)
-                )''')
-
-    c.execute('''CREATE TABLE batches (
-                    batch_id TEXT PRIMARY KEY,
-                    batch_number TEXT UNIQUE,
-                    recipe_id INTEGER,
-                    colour_code TEXT,
-                    status TEXT, stage TEXT,
-                    tsc REAL, ph REAL, visc REAL,
-                    de REAL, dl REAL, da REAL, db REAL, colour_strength REAL,
-                    manufacturing_date TEXT, attempt_count INTEGER DEFAULT 0,
-                    remark TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )''')
-
-    c.execute('''CREATE TABLE seq_counter (
-                    colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
-                )''')
-
-    c.execute('''CREATE TABLE users (
-                    username TEXT PRIMARY KEY,
-                    password TEXT NOT NULL,
-                    role TEXT NOT NULL
-                )''')
-
-    c.execute('''CREATE TABLE logs (
-                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    username TEXT,
-                    action TEXT,
-                    details TEXT,
-                    batch_number TEXT,
-                    recipe_id INTEGER
-                )''')
-
-    c.execute("PRAGMA foreign_keys = ON;")
-
-    # Seed users
-    c.execute("SELECT COUNT(*) FROM users")
-    if c.fetchone()[0] == 0:
+    # Check if colour_codes table exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='colour_codes'")
+    if c.fetchone() is None:
+        # Tables don't exist, create them
+        c.execute("PRAGMA foreign_keys = OFF;")
+        c.execute('''CREATE TABLE colour_codes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        code TEXT UNIQUE NOT NULL,
+                        description TEXT
+                    )''')
+        c.execute('''CREATE TABLE recipes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        colour_code_id INTEGER NOT NULL,
+                        colour_name TEXT NOT NULL,
+                        tsc_min REAL, tsc_max REAL, ph_min REAL, ph_max REAL,
+                        visc_min REAL, visc_max REAL, de_max REAL,
+                        dl_tolerance REAL DEFAULT 0.5, da_tolerance REAL DEFAULT 0.6,
+                        db_tolerance REAL DEFAULT 0.6, strength_min REAL DEFAULT 95.0,
+                        strength_max REAL DEFAULT 105.0,
+                        UNIQUE(colour_code_id, colour_name)
+                    )''')
+        c.execute('''CREATE TABLE batches (
+                        batch_id TEXT PRIMARY KEY,
+                        batch_number TEXT UNIQUE,
+                        recipe_id INTEGER,
+                        colour_code TEXT,
+                        status TEXT, stage TEXT,
+                        tsc REAL, ph REAL, visc REAL,
+                        de REAL, dl REAL, da REAL, db REAL, colour_strength REAL,
+                        manufacturing_date TEXT, attempt_count INTEGER DEFAULT 0,
+                        remark TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )''')
+        c.execute('''CREATE TABLE seq_counter (
+                        colour_code TEXT PRIMARY KEY, last_seq INTEGER DEFAULT 0
+                    )''')
+        c.execute('''CREATE TABLE users (
+                        username TEXT PRIMARY KEY,
+                        password TEXT NOT NULL,
+                        role TEXT NOT NULL
+                    )''')
+        c.execute('''CREATE TABLE logs (
+                        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        username TEXT,
+                        action TEXT,
+                        details TEXT,
+                        batch_number TEXT,
+                        recipe_id INTEGER
+                    )''')
+        c.execute("PRAGMA foreign_keys = ON;")
+        # Seed default users
         default_users = [
             ("admin", "admin123", "Admin"),
             ("production", "prod123", "Production"),
             ("qa", "qa123", "QA")
         ]
         c.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)", default_users)
-
-    # Sample colour codes
-    c.execute("SELECT COUNT(*) FROM colour_codes")
-    if c.fetchone()[0] == 0:
+        # Seed sample colour codes
         sample_codes = [
             ("RED", "Red shades"),
             ("BLUE", "Blue shades"),
@@ -124,9 +110,15 @@ def init_db():
             ("YELLOW", "Yellow shades")
         ]
         c.executemany("INSERT INTO colour_codes (code, description) VALUES (?,?)", sample_codes)
+        conn.commit()
+        conn.close()
+        return "Database initialized with sample data."
+    else:
+        conn.close()
+        return "Using existing database."
 
-    conn.commit()
-    conn.close()
+# Call init_db once at startup
+init_msg = init_db()
 
 # ---------- LOGGING ----------
 def add_log(username, action, details, batch_number=None, recipe_id=None):
@@ -583,14 +575,10 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         st.error(f"Error generating COA: {str(e)}")
         return None
 
-# ---------- INIT DB ----------
-try:
-    init_db()
-    st.success(f"✅ Database initialized at {DB_PATH}")
-except Exception as e:
-    st.error(f"❌ Database initialization failed: {e}\n{traceback.format_exc()}")
+# ---------- STREAMLIT APP ----------
+st.set_page_config(page_title="Pigment Monitor", layout="wide")
 
-# ---------- LOGIN ----------
+# ---- Login ----
 def login():
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
@@ -598,6 +586,7 @@ def login():
         st.session_state.role = None
 
     if not st.session_state.logged_in:
+        st.title("🔐 Pigment Dispersion System - Login")
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
@@ -620,17 +609,24 @@ def login():
             st.session_state.role = None
             st.rerun()
 
-st.set_page_config(page_title="Pigment Monitor", layout="wide")
 login()
-st.title("🎨 Pigment Dispersion System")
 
-# ---------- ROLE HELPERS ----------
+# ---- Sidebar debug ----
+st.sidebar.write("---")
+st.sidebar.write("**Database Status**")
+st.sidebar.write(f"Path: `{DB_PATH}`")
+st.sidebar.write(f"Exists: {os.path.exists(DB_PATH)}")
+st.sidebar.write(f"Init: {init_msg}")
+
+# ---- Role helpers ----
 def is_admin():
     return st.session_state.role == "Admin"
 def is_production():
     return st.session_state.role == "Production"
 def is_qa():
     return st.session_state.role == "QA"
+
+st.title("🎨 Pigment Dispersion System")
 
 # Build tabs
 tabs_list = []
@@ -660,8 +656,19 @@ if is_admin():
                 st.rerun()
         with col_db:
             if st.button("🗑️ Reset Database (All Data Lost!)", type="primary"):
-                init_db()
-                st.success("Database reset!")
+                # Drop all tables and reinitialize
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("DROP TABLE IF EXISTS colour_codes")
+                c.execute("DROP TABLE IF EXISTS recipes")
+                c.execute("DROP TABLE IF EXISTS batches")
+                c.execute("DROP TABLE IF EXISTS seq_counter")
+                c.execute("DROP TABLE IF EXISTS users")
+                c.execute("DROP TABLE IF EXISTS logs")
+                conn.commit()
+                conn.close()
+                init_msg = init_db()
+                st.success("Database reset to default!")
                 st.rerun()
 
         st.subheader("🎨 Colour Codes & Recipes")
@@ -1330,6 +1337,6 @@ if is_admin():
         else:
             st.dataframe(logs_df, use_container_width=True)
 
-# ---------- SIDEBAR ----------
+# ---------- SIDEBAR REFRESH ----------
 st.sidebar.button("🔄 Refresh Data", on_click=lambda: st.rerun())
 st.caption("💡 Reports are available to all roles. SPC charts show trends vs control limits.")
