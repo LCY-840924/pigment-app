@@ -133,7 +133,7 @@ def add_log(username, action, details, batch_number=None, recipe_id=None):
     except:
         pass
 
-# ---------- DATABASE FUNCTIONS (with error handling) ----------
+# ---------- DATABASE FUNCTIONS ----------
 def get_colour_codes():
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM colour_codes ORDER BY code", conn)
@@ -550,8 +550,8 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
 
         bottom_data = [
             ["Date:", mfg_str],
-            ["Prepared by:", template.get('prepared_by', 'MOKHJY')],
-            ["Reviewed & approved by:", template.get('reviewed_by', 'MOKHJY')]
+            ["Prepared by:", template.get('prepared_by', 'MOK')],
+            ["Reviewed & approved by:", template.get('reviewed_by', 'H.JY')]
         ]
         bottom_table = Table(bottom_data, colWidths=[doc.width * 0.30, doc.width * 0.70])
         bottom_table.setStyle(TableStyle([
@@ -656,7 +656,6 @@ if is_admin():
                 st.rerun()
         with col_db:
             if st.button("🗑️ Reset Database (All Data Lost!)", type="primary"):
-                # Drop all tables and reinitialize
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("DROP TABLE IF EXISTS colour_codes")
@@ -979,7 +978,6 @@ if is_admin() or is_production():
                     else:
                         add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str, st.session_state.username)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
-                        # Clear QR state
                         for key in ['qr_recipe_id', 'qr_batch', 'colour_filter']:
                             st.session_state.pop(key, None)
                         st.rerun()
@@ -1134,11 +1132,12 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
+    # ---------- FIXED COA GENERATION TAB ----------
     with report_tabs[1]:
         st.subheader("📄 Certificate of Analysis")
         completed_list = get_completed_batches()
         if completed_list.empty:
-            st.info("No completed batches.")
+            st.info("No completed batches available. Complete a batch first.")
         else:
             with st.expander("✏️ Customize COA Template", expanded=False):
                 col1, col2 = st.columns(2)
@@ -1151,8 +1150,8 @@ with tabs[report_index]:
                 with col2:
                     phone = st.text_input("Phone/Fax", value="TEL: 605-5412018            FAX : 605-5412716", key="coa_phone")
                     title = st.text_input("Title", value="PROVISIONAL CERTIFICATE OF ANALYSIS", key="coa_title")
-                    prep_by = st.text_input("Prepared by", value="MOKHJY", key="coa_prepared")
-                    rev_by = st.text_input("Reviewed by", value="MOKHJY", key="coa_reviewed")
+                    prep_by = st.text_input("Prepared by", value="MOK", key="coa_prepared")
+                    rev_by = st.text_input("Reviewed by", value="H.JY", key="coa_reviewed")
 
             template = {
                 'company_name': company_name,
@@ -1164,18 +1163,31 @@ with tabs[report_index]:
                 'reviewed_by': rev_by
             }
 
+            # Batch selection
             batch_options = {f"{row['batch_number']} ({row['colour_code']})": row['batch_number']
                              for _, row in completed_list.iterrows()}
-            selected_batch = st.selectbox("Select Batch", list(batch_options.keys()))
-            batch_num = batch_options[selected_batch]
+            selected_batch_display = st.selectbox("Select Batch", list(batch_options.keys()))
+            batch_num = batch_options[selected_batch_display]
 
+            # Force reload button
+            if st.button("🔄 Load Batch Data"):
+                st.rerun()
+
+            # Fetch batch and recipe data
             all_batches = get_batches()
             batch_df = all_batches[all_batches['batch_number'] == batch_num]
-            if not batch_df.empty:
+
+            if batch_df.empty:
+                st.error(f"❌ Batch '{batch_num}' not found in database. Please select another batch.")
+            else:
                 batch = batch_df.iloc[0]
                 recipe_df = get_recipe_by_id(batch['recipe_id'])
-                if not recipe_df.empty:
+                if recipe_df.empty:
+                    st.error(f"❌ Recipe for batch '{batch_num}' not found. The batch may have been corrupted.")
+                else:
                     recipe = recipe_df.iloc[0]
+
+                    # Date calculations
                     mfg_val = batch['manufacturing_date']
                     if pd.isna(mfg_val) or mfg_val is None:
                         mfg_date = datetime.now()
@@ -1237,6 +1249,7 @@ with tabs[report_index]:
                         }
                     )
 
+                    # Generate PDF button – always visible when batch is valid
                     if st.button("📑 Generate COA PDF", type="primary"):
                         pdf_buffer = generate_coa_pdf(batch_num, template, edited_results)
                         if pdf_buffer:
@@ -1246,7 +1259,9 @@ with tabs[report_index]:
                                 file_name=f"COA_{batch_num}.pdf",
                                 mime="application/pdf"
                             )
-                            st.success("✅ COA generated!")
+                            st.success("✅ COA generated successfully!")
+                        else:
+                            st.error("❌ Failed to generate COA. Check that all batch data is complete.")
 
     with report_tabs[2]:
         st.subheader("📥 Export Completed Data")
