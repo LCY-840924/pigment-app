@@ -636,201 +636,206 @@ elif is_qa():
     tabs_list = ["QA Testing", "WIP Progress", "📊 Reports"]
 tabs = st.tabs(tabs_list)
 
-# ---------- TAB 1: DEFINE RECIPE (ADMIN ONLY) ----------
+# ---------- TAB 1: DEFINE RECIPE (ADMIN ONLY) - FULL CRUD ----------
 if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
-        # ---- COLOUR CODE MANAGEMENT ----
-        st.subheader("🎨 Manage Colour Codes (Major Colours)")
+        st.subheader("🎨 Colour Codes & Recipes")
+        st.caption("Expand a colour code to manage its recipes. All changes are saved immediately.")
 
-        # Add new colour code - simple form (no columns)
-        with st.form("add_colour_code_form"):
-            st.write("**Add New Colour Code**")
-            new_code = st.text_input("Code (e.g., RED)", max_chars=20)
-            new_desc = st.text_input("Description (optional)")
-            submitted = st.form_submit_button("➕ Add Colour Code")
-            if submitted:
-                if new_code:
-                    if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
-                        st.success(f"✅ Colour code {new_code.upper()} added!")
-                        st.rerun()
+        # Helper: clear editing states for a given colour code
+        def clear_edit_states(cc_id=None, recipe_id=None):
+            if cc_id is not None:
+                st.session_state.pop(f'edit_cc_{cc_id}', None)
+            if recipe_id is not None:
+                st.session_state.pop(f'edit_recipe_{recipe_id}', None)
+
+        # -----------------------------------------------------------------
+        # ADD NEW COLOUR CODE
+        # -----------------------------------------------------------------
+        with st.expander("➕ Add New Colour Code", expanded=False):
+            with st.form("add_colour_code_form"):
+                new_code = st.text_input("Colour Code (e.g., RED)", max_chars=20)
+                new_desc = st.text_input("Description (optional)")
+                submitted = st.form_submit_button("Add Colour Code")
+                if submitted:
+                    if not new_code:
+                        st.error("❌ Code cannot be empty.")
                     else:
-                        st.error(f"❌ Colour code {new_code.upper()} already exists!")
-                else:
-                    st.error("❌ Code cannot be empty.")
-
-        # Display existing codes with Edit/Delete
-        colour_codes_df = get_colour_codes()
-        if not colour_codes_df.empty:
-            st.dataframe(colour_codes_df, use_container_width=True, column_config={
-                "id": "ID",
-                "code": "Code",
-                "description": "Description"
-            })
-
-            # Edit or delete
-            selected_code_id = st.selectbox(
-                "Select Colour Code to Edit/Delete",
-                options=colour_codes_df['id'].tolist(),
-                format_func=lambda x: f"{colour_codes_df[colour_codes_df['id']==x]['code'].iloc[0]}"
-            )
-            if selected_code_id:
-                code_row = colour_codes_df[colour_codes_df['id'] == selected_code_id].iloc[0]
-                with st.expander(f"✏️ Edit {code_row['code']}"):
-                    with st.form("edit_colour_code_form"):
-                        edit_code = st.text_input("Colour Code", value=code_row['code'])
-                        edit_desc = st.text_input("Description", value=code_row['description'] or "")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.form_submit_button("✅ Update"):
-                                if edit_code:
-                                    if update_colour_code(selected_code_id, edit_code.upper(), edit_desc, st.session_state.username):
-                                        st.success("✅ Updated!")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Code already exists or invalid.")
-                                else:
-                                    st.error("❌ Code cannot be empty.")
-                        with col2:
-                            if st.form_submit_button("🗑️ Delete", type="primary"):
-                                success, msg = delete_colour_code(selected_code_id, st.session_state.username)
-                                if success:
-                                    st.success("✅ Deleted!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {msg}")
-        else:
-            st.info("No colour codes defined yet. Add one above.")
-
-        st.divider()
-
-        # ---- RECIPE MANAGEMENT (Tree View) ----
-        st.subheader("📋 Recipes (Tree View by Colour Code)")
-
-        # Get all recipes with colour code info
-        recipes_df = get_recipes()
-
-        # Search bar
-        search_term = st.text_input("🔍 Search Recipes by Colour Code or Name", placeholder="Type to filter...")
-        if search_term:
-            recipes_df = recipes_df[
-                recipes_df['colour_code'].str.contains(search_term, case=False) |
-                recipes_df['colour_name'].str.contains(search_term, case=False)
-            ]
-
-        if recipes_df.empty:
-            st.info("No recipes found.")
-        else:
-            # Group by colour code
-            grouped = recipes_df.groupby('colour_code')
-            for colour_code, group in grouped:
-                with st.expander(f"🎨 {colour_code} ({len(group)} recipes)", expanded=False):
-                    # Show each recipe in this group
-                    for _, recipe in group.iterrows():
-                        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                        with col1:
-                            st.write(f"**{recipe['colour_name']}**")
-                            st.caption(f"ID: {recipe['id']}")
-                        with col2:
-                            st.write(f"TSC: {recipe['tsc_min']:.1f}-{recipe['tsc_max']:.1f}%")
-                            st.write(f"pH: {recipe['ph_min']:.1f}-{recipe['ph_max']:.1f}")
-                        with col3:
-                            st.write(f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP")
-                            st.write(f"DE: ≤{recipe['de_max']:.2f}")
-                        with col4:
-                            if st.button(f"✏️ Edit", key=f"edit_{recipe['id']}"):
-                                st.session_state['edit_recipe_id'] = recipe['id']
-                                st.rerun()
-                            if st.button(f"🗑️ Delete", key=f"del_{recipe['id']}"):
-                                delete_recipe(recipe['id'], st.session_state.username)
-                                st.success(f"✅ Recipe '{recipe['colour_name']}' deleted!")
-                                st.rerun()
-
-            # If an edit is triggered, show edit form
-            if 'edit_recipe_id' in st.session_state:
-                edit_id = st.session_state['edit_recipe_id']
-                recipe_to_edit = recipes_df[recipes_df['id'] == edit_id]
-                if not recipe_to_edit.empty:
-                    recipe = recipe_to_edit.iloc[0]
-                    with st.expander(f"✏️ Editing {recipe['colour_name']}", expanded=True):
-                        with st.form("edit_recipe_form"):
-                            st.text_input("Colour Code", value=recipe['colour_code'], disabled=True)
-                            edit_colour_name = st.text_input("Colour Name", value=recipe['colour_name'])
-                            edit_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']), step=0.1)
-                            edit_tsc_max = st.number_input("TSC Max", value=float(recipe['tsc_max']), step=0.1)
-                            edit_ph_min = st.number_input("pH Min", value=float(recipe['ph_min']), step=0.1)
-                            edit_ph_max = st.number_input("pH Max", value=float(recipe['ph_max']), step=0.1)
-                            edit_visc_min = st.number_input("Viscosity Min", value=float(recipe['visc_min']), step=10.0)
-                            edit_visc_max = st.number_input("Viscosity Max", value=float(recipe['visc_max']), step=10.0)
-                            edit_de_max = st.number_input("DE Max", value=float(recipe['de_max']), step=0.01)
-                            edit_dl_tol = st.number_input("DL Tolerance", value=float(recipe['dl_tolerance']), step=0.1)
-                            edit_da_tol = st.number_input("Da Tolerance", value=float(recipe['da_tolerance']), step=0.1)
-                            edit_db_tol = st.number_input("Db Tolerance", value=float(recipe['db_tolerance']), step=0.1)
-                            edit_str_min = st.number_input("Strength Min", value=float(recipe['strength_min']), step=1.0)
-                            edit_str_max = st.number_input("Strength Max", value=float(recipe['strength_max']), step=1.0)
-
-                            if st.form_submit_button("Update Recipe"):
-                                update_recipe(edit_id, edit_colour_name,
-                                              edit_tsc_min, edit_tsc_max,
-                                              edit_ph_min, edit_ph_max,
-                                              edit_visc_min, edit_visc_max,
-                                              edit_de_max, edit_dl_tol, edit_da_tol,
-                                              edit_db_tol, edit_str_min, edit_str_max,
-                                              st.session_state.username)
-                                st.success("✅ Recipe updated!")
-                                del st.session_state['edit_recipe_id']
-                                st.rerun()
-
-        # ---- Add New Recipe ----
-        st.subheader("➕ Add New Recipe")
-        with st.form("add_recipe_form"):
-            colour_codes = get_colour_codes()
-            if colour_codes.empty:
-                st.warning("Please add a colour code first.")
-            else:
-                colour_code_options = {f"{row['code']}": row['id'] for _, row in colour_codes.iterrows()}
-                selected_colour = st.selectbox("Colour Code", options=list(colour_code_options.keys()))
-                colour_code_id = colour_code_options[selected_colour]
-
-                col_name = st.text_input("Colour Name (Recipe Name)", placeholder="e.g. Red Oxide 123")
-
-                st.subheader("📊 Basic QC Specs (Ranges)")
-                col1, col2 = st.columns(2)
-                with col1:
-                    tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
-                    ph_min = st.number_input("pH Min", value=8.0, step=0.1)
-                    visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)
-                with col2:
-                    tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
-                    ph_max = st.number_input("pH Max", value=9.0, step=0.1)
-                    visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)
-
-                st.subheader("🎨 Colouristic Properties")
-                col1, col2 = st.columns(2)
-                with col1:
-                    de_max = st.number_input("DE Max (≤ value)", value=1.0, step=0.01)
-                    dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1)
-                    da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1)
-                with col2:
-                    db_tol = st.number_input("Db Tolerance (±)", value=0.6, step=0.1)
-                    str_min = st.number_input("Strength Min %", value=95.0, step=1.0)
-                    str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
-
-                if st.form_submit_button("💾 Save Recipe"):
-                    if not col_name:
-                        st.error("❌ Colour Name is required.")
-                    else:
-                        success, recipe_id = add_recipe(colour_code_id, col_name, tsc_min, tsc_max, ph_min, ph_max,
-                                                       visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
-                                                       str_min, str_max, st.session_state.username)
-                        if success:
-                            st.toast(f"✅ Recipe '{col_name}' saved!", icon="✅")
+                        if add_colour_code(new_code.upper(), new_desc, st.session_state.username):
+                            st.success(f"✅ Colour code {new_code.upper()} added!")
                             st.rerun()
                         else:
-                            st.error("❌ Recipe already exists for this colour code.")
+                            st.error(f"❌ Colour code {new_code.upper()} already exists!")
 
-        # ---- Backup / Restore ----
+        # -----------------------------------------------------------------
+        # DISPLAY TREE: Colour Codes + their Recipes
+        # -----------------------------------------------------------------
+        colour_codes_df = get_colour_codes()
+        recipes_df = get_recipes()   # already joined with colour_code
+
+        if colour_codes_df.empty:
+            st.info("No colour codes defined. Add one using the expander above.")
+        else:
+            for _, cc_row in colour_codes_df.iterrows():
+                cc_id = cc_row['id']
+                cc_code = cc_row['code']
+                cc_desc = cc_row['description'] or ""
+
+                # Get recipes for this colour code
+                cc_recipes = recipes_df[recipes_df['colour_code_id'] == cc_id]
+
+                with st.expander(f"🎨 {cc_code}  –  {cc_desc}  ({len(cc_recipes)} recipe(s))", expanded=False):
+                    # --- Actions for this colour code (Edit / Delete) ---
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    with col1:
+                        st.write(f"**ID:** {cc_id}")
+                    with col2:
+                        if st.button(f"✏️ Edit Code", key=f"edit_cc_{cc_id}"):
+                            # Toggle edit mode
+                            if st.session_state.get(f'edit_cc_{cc_id}', False):
+                                clear_edit_states(cc_id=cc_id)
+                            else:
+                                st.session_state[f'edit_cc_{cc_id}'] = True
+                            st.rerun()
+                    with col3:
+                        if st.button(f"🗑️ Delete Code", key=f"del_cc_{cc_id}"):
+                            success, msg = delete_colour_code(cc_id, st.session_state.username)
+                            if success:
+                                st.success("✅ Colour code deleted!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {msg}")
+
+                    # --- Inline edit colour code form (if triggered) ---
+                    if st.session_state.get(f'edit_cc_{cc_id}', False):
+                        with st.form(key=f"edit_cc_form_{cc_id}"):
+                            new_code_val = st.text_input("Code", value=cc_code)
+                            new_desc_val = st.text_input("Description", value=cc_desc)
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                if st.form_submit_button("✅ Update Code"):
+                                    if update_colour_code(cc_id, new_code_val.upper(), new_desc_val, st.session_state.username):
+                                        st.success("✅ Colour code updated!")
+                                        clear_edit_states(cc_id=cc_id)
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Update failed (duplicate code?).")
+                            with c2:
+                                if st.form_submit_button("❌ Cancel"):
+                                    clear_edit_states(cc_id=cc_id)
+                                    st.rerun()
+
+                    # --- Add new recipe for this colour code ---
+                    with st.expander(f"➕ Add Recipe under {cc_code}", expanded=False):
+                        with st.form(key=f"add_recipe_form_{cc_id}"):
+                            recipe_name = st.text_input("Recipe Name (Colour Name)")
+                            st.caption("Set the control limits for this recipe:")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                tsc_min = st.number_input("TSC Min (%)", value=43.0, step=0.1)
+                                ph_min = st.number_input("pH Min", value=8.0, step=0.1)
+                                visc_min = st.number_input("Viscosity Min (cP)", value=1100.0, step=10.0)
+                                de_max = st.number_input("DE Max (≤ value)", value=1.0, step=0.01)
+                                dl_tol = st.number_input("DL Tolerance (±)", value=0.5, step=0.1)
+                            with col2:
+                                tsc_max = st.number_input("TSC Max (%)", value=47.0, step=0.1)
+                                ph_max = st.number_input("pH Max", value=9.0, step=0.1)
+                                visc_max = st.number_input("Viscosity Max (cP)", value=1300.0, step=10.0)
+                                da_tol = st.number_input("Da Tolerance (±)", value=0.6, step=0.1)
+                                db_tol = st.number_input("Db Tolerance (±)", value=0.6, step=0.1)
+                                str_min = st.number_input("Strength Min %", value=95.0, step=1.0)
+                                str_max = st.number_input("Strength Max %", value=105.0, step=1.0)
+
+                            if st.form_submit_button("💾 Save Recipe"):
+                                if not recipe_name:
+                                    st.error("❌ Recipe Name is required.")
+                                else:
+                                    success, recipe_id = add_recipe(
+                                        cc_id, recipe_name,
+                                        tsc_min, tsc_max, ph_min, ph_max,
+                                        visc_min, visc_max, de_max,
+                                        dl_tol, da_tol, db_tol,
+                                        str_min, str_max,
+                                        st.session_state.username
+                                    )
+                                    if success:
+                                        st.toast(f"✅ Recipe '{recipe_name}' saved!", icon="✅")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Recipe already exists for this colour code.")
+
+                    # --- Display existing recipes for this colour code ---
+                    if cc_recipes.empty:
+                        st.info("No recipes yet. Use the 'Add Recipe' expander above.")
+                    else:
+                        for _, recipe in cc_recipes.iterrows():
+                            recipe_id = recipe['id']
+                            with st.container():
+                                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                                with col1:
+                                    st.write(f"**{recipe['colour_name']}**")
+                                with col2:
+                                    st.caption(f"TSC: {recipe['tsc_min']:.1f}-{recipe['tsc_max']:.1f}%  |  pH: {recipe['ph_min']:.1f}-{recipe['ph_max']:.1f}")
+                                    st.caption(f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP  |  DE ≤ {recipe['de_max']:.2f}")
+                                with col3:
+                                    if st.button(f"✏️ Edit", key=f"edit_recipe_{recipe_id}"):
+                                        # Toggle edit mode
+                                        if st.session_state.get(f'edit_recipe_{recipe_id}', False):
+                                            clear_edit_states(recipe_id=recipe_id)
+                                        else:
+                                            st.session_state[f'edit_recipe_{recipe_id}'] = True
+                                        st.rerun()
+                                with col4:
+                                    if st.button(f"🗑️ Delete", key=f"del_recipe_{recipe_id}"):
+                                        delete_recipe(recipe_id, st.session_state.username)
+                                        st.success(f"✅ Recipe '{recipe['colour_name']}' deleted!")
+                                        st.rerun()
+
+                                # --- Inline edit recipe form (if triggered) ---
+                                if st.session_state.get(f'edit_recipe_{recipe_id}', False):
+                                    with st.form(key=f"edit_recipe_form_{recipe_id}"):
+                                        edit_name = st.text_input("Colour Name", value=recipe['colour_name'])
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            e_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']), step=0.1)
+                                            e_ph_min = st.number_input("pH Min", value=float(recipe['ph_min']), step=0.1)
+                                            e_visc_min = st.number_input("Viscosity Min", value=float(recipe['visc_min']), step=10.0)
+                                            e_de_max = st.number_input("DE Max", value=float(recipe['de_max']), step=0.01)
+                                            e_dl_tol = st.number_input("DL Tolerance", value=float(recipe['dl_tolerance']), step=0.1)
+                                        with col2:
+                                            e_tsc_max = st.number_input("TSC Max", value=float(recipe['tsc_max']), step=0.1)
+                                            e_ph_max = st.number_input("pH Max", value=float(recipe['ph_max']), step=0.1)
+                                            e_visc_max = st.number_input("Viscosity Max", value=float(recipe['visc_max']), step=10.0)
+                                            e_da_tol = st.number_input("Da Tolerance", value=float(recipe['da_tolerance']), step=0.1)
+                                            e_db_tol = st.number_input("Db Tolerance", value=float(recipe['db_tolerance']), step=0.1)
+                                            e_str_min = st.number_input("Strength Min", value=float(recipe['strength_min']), step=1.0)
+                                            e_str_max = st.number_input("Strength Max", value=float(recipe['strength_max']), step=1.0)
+
+                                        c1, c2 = st.columns(2)
+                                        with c1:
+                                            if st.form_submit_button("✅ Update Recipe"):
+                                                update_recipe(
+                                                    recipe_id, edit_name,
+                                                    e_tsc_min, e_tsc_max,
+                                                    e_ph_min, e_ph_max,
+                                                    e_visc_min, e_visc_max,
+                                                    e_de_max, e_dl_tol, e_da_tol, e_db_tol,
+                                                    e_str_min, e_str_max,
+                                                    st.session_state.username
+                                                )
+                                                st.success("✅ Recipe updated!")
+                                                clear_edit_states(recipe_id=recipe_id)
+                                                st.rerun()
+                                        with c2:
+                                            if st.form_submit_button("❌ Cancel"):
+                                                clear_edit_states(recipe_id=recipe_id)
+                                                st.rerun()
+
+        # -----------------------------------------------------------------
+        # BACKUP / RESTORE
+        # -----------------------------------------------------------------
         st.divider()
         st.subheader("💾 Backup / Restore Database")
         col1, col2 = st.columns(2)
@@ -855,7 +860,7 @@ if is_admin():
                     except Exception as e:
                         st.error(f"❌ Restore failed: {str(e)}")
 
-# ---------- TAB 2 / 3: ISSUE BATCH ----------
+# ---------- TAB 2 / 3: ISSUE BATCH (same as original) ----------
 if is_admin() or is_production():
     tab_idx = 1 if is_admin() else 0
     with tabs[tab_idx]:
@@ -1003,7 +1008,7 @@ if is_admin() or is_production():
                             del st.session_state['colour_filter']
                         st.rerun()
 
-# ---------- TAB 3 / 4: QA TESTING ----------
+# ---------- TAB 3 / 4: QA TESTING (unchanged) ----------
 if is_admin() or is_qa():
     tab_idx = 2 if is_admin() else 0
     with tabs[tab_idx]:
@@ -1042,7 +1047,7 @@ if is_admin() or is_qa():
         else:
             st.info("No batches waiting for QA.")
 
-# ---------- WIP PROGRESS ----------
+# ---------- WIP PROGRESS (unchanged) ----------
 wip_index = next(i for i, name in enumerate(tabs_list) if name == "WIP Progress")
 with tabs[wip_index]:
     st.header("📋 4. Live WIP Progress")
@@ -1095,7 +1100,7 @@ with tabs[wip_index]:
                 else:
                     st.write("(Read Only)")
 
-# ---------- REPORTS TAB ----------
+# ---------- REPORTS TAB (unchanged) ----------
 report_index = next(i for i, name in enumerate(tabs_list) if name == "📊 Reports")
 with tabs[report_index]:
     st.header("📊 Reports & Analytics")
@@ -1300,7 +1305,7 @@ with tabs[report_index]:
                 mime="text/csv"
             )
 
-# ---------- TAB: USER MANAGEMENT (ADMIN ONLY) ----------
+# ---------- TAB: USER MANAGEMENT (unchanged) ----------
 if is_admin():
     user_tab_index = tabs_list.index("👥 User Management")
     with tabs[user_tab_index]:
@@ -1362,7 +1367,7 @@ if is_admin():
                             else:
                                 st.warning("You cannot delete your own account.")
 
-# ---------- TAB: ACTIVITY LOG (ADMIN ONLY) ----------
+# ---------- TAB: ACTIVITY LOG (unchanged) ----------
 if is_admin():
     log_tab_index = tabs_list.index("📜 Activity Log")
     with tabs[log_tab_index]:
