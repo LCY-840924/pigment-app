@@ -11,6 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import os
+import traceback
 
 # ---------- QR DECODER ----------
 try:
@@ -32,12 +33,16 @@ def decode_qr_from_image(image):
         pass
     return None
 
-# ---------- DATABASE SETUP (with absolute path) ----------
+# ---------- DATABASE SETUP ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'pigment.db')
 
+def get_db_connection():
+    """Return a connection to the database, ensuring the file exists."""
+    return sqlite3.connect(DB_PATH)
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("PRAGMA foreign_keys = OFF;")
     c.execute("DROP TABLE IF EXISTS recipes")
@@ -125,72 +130,66 @@ def init_db():
 
 # ---------- LOGGING ----------
 def add_log(username, action, details, batch_number=None, recipe_id=None):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO logs (timestamp, username, action, details, batch_number, recipe_id) VALUES (?,?,?,?,?,?)",
-              (timestamp, username, action, details, batch_number, recipe_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO logs (timestamp, username, action, details, batch_number, recipe_id) VALUES (?,?,?,?,?,?)",
+                  (timestamp, username, action, details, batch_number, recipe_id))
+        conn.commit()
+        conn.close()
+    except:
+        pass
 
-# ---------- DATABASE FUNCTIONS (All return success, message) ----------
+# ---------- DATABASE FUNCTIONS (with error handling) ----------
 def get_colour_codes():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM colour_codes ORDER BY code", conn)
     conn.close()
     return df
 
 def add_colour_code(code, description, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute("INSERT INTO colour_codes (code, description) VALUES (?,?)", (code, description))
         conn.commit()
         conn.close()
         add_log(username, "Add Colour Code", f"Added colour code {code}")
         return True, None
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False, "Duplicate colour code"
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 def update_colour_code(code_id, code, description, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute("UPDATE colour_codes SET code=?, description=? WHERE id=?", (code, description, code_id))
         conn.commit()
         conn.close()
         add_log(username, "Update Colour Code", f"Updated colour code {code}")
         return True, None
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False, "Duplicate colour code"
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 def delete_colour_code(code_id, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM recipes WHERE colour_code_id = ?", (code_id,))
-    if c.fetchone()[0] > 0:
-        conn.close()
-        return False, "Cannot delete: there are recipes using this colour code."
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM recipes WHERE colour_code_id = ?", (code_id,))
+        if c.fetchone()[0] > 0:
+            conn.close()
+            return False, "Cannot delete: there are recipes using this colour code."
         c.execute("DELETE FROM colour_codes WHERE id = ?", (code_id,))
         conn.commit()
         conn.close()
         add_log(username, "Delete Colour Code", f"Deleted colour code ID {code_id}")
         return True, None
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 def get_recipes():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     query = """
         SELECT r.id, r.colour_code_id, cc.code as colour_code, r.colour_name,
                r.tsc_min, r.tsc_max, r.ph_min, r.ph_max,
@@ -206,16 +205,16 @@ def get_recipes():
     return df
 
 def get_recipe_by_id(recipe_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM recipes WHERE id = ?", conn, params=(recipe_id,))
     conn.close()
     return df
 
 def add_recipe(colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute("""INSERT INTO recipes (colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                      visc_min, visc_max, de_max, dl_tolerance, da_tolerance, db_tolerance,
                      strength_min, strength_max)
@@ -227,19 +226,15 @@ def add_recipe(colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
         conn.close()
         add_log(username, "Add Recipe", f"Added recipe {colour_name} (colour code ID {colour_code_id})", recipe_id=recipe_id)
         return True, recipe_id
-    except sqlite3.IntegrityError as e:
-        conn.close()
-        return False, f"Duplicate recipe for this colour code: {e}"
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                   visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
                   str_min, str_max, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute("""UPDATE recipes SET
                      colour_name=?, tsc_min=?, tsc_max=?, ph_min=?, ph_max=?,
                      visc_min=?, visc_max=?, de_max=?,
@@ -253,37 +248,35 @@ def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
         add_log(username, "Update Recipe", f"Updated recipe ID {recipe_id}", recipe_id=recipe_id)
         return True, None
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 def delete_recipe(recipe_id, username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
         conn.commit()
         conn.close()
         add_log(username, "Delete Recipe", f"Deleted recipe ID {recipe_id}", recipe_id=recipe_id)
         return True, None
     except Exception as e:
-        conn.close()
         return False, str(e)
 
 # ---------- BATCH FUNCTIONS ----------
 def get_batches():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM batches ORDER BY created_at DESC", conn)
     conn.close()
     return df
 
 def get_completed_batches():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM batches WHERE status = 'Completed' ORDER BY created_at DESC", conn)
     conn.close()
     return df
 
 def batch_exists(batch_number):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT 1 FROM batches WHERE batch_number = ?", (batch_number,))
     exists = c.fetchone() is not None
@@ -291,7 +284,7 @@ def batch_exists(batch_number):
     return exists
 
 def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     batch_id = f"b_{batch_number}"
     c.execute(
@@ -303,7 +296,7 @@ def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username
     return batch_number
 
 def update_status(batch_id, status, stage, username):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT batch_number FROM batches WHERE batch_id = ?", (batch_id,))
     batch_number = c.fetchone()[0]
@@ -313,7 +306,7 @@ def update_status(batch_id, status, stage, username):
     add_log(username, "Update Status", f"Batch {batch_number} status changed to {status} (stage: {stage})", batch_number=batch_number)
 
 def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, username):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT batch_number FROM batches WHERE batch_id = ?", (batch_id,))
     batch_number = c.fetchone()[0]
@@ -357,34 +350,34 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, 
 
 # ---------- USER MANAGEMENT ----------
 def get_users():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT username, role FROM users ORDER BY username", conn)
     conn.close()
     return df
 
 def add_user(username, password, role):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)", (username, password, role))
     conn.commit()
     conn.close()
 
 def update_user(username, password, role):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("UPDATE users SET password=?, role=? WHERE username=?", (password, role, username))
     conn.commit()
     conn.close()
 
 def delete_user(username):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE username=?", (username,))
     conn.commit()
     conn.close()
 
 def check_login(username, password):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT username, role FROM users WHERE username=? AND password=?", (username, password))
     row = c.fetchone()
@@ -392,14 +385,14 @@ def check_login(username, password):
     return row
 
 def get_logs():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
     conn.close()
     return df
 
 # ---------- BACKUP / RESTORE ----------
 def export_db_to_zip():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for table in ['colour_codes', 'recipes', 'batches', 'seq_counter', 'users', 'logs']:
@@ -414,7 +407,7 @@ def export_db_to_zip():
     return zip_buffer
 
 def import_db_from_zip(zip_file):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     with zipfile.ZipFile(zip_file, 'r') as zipf:
         for table in ['colour_codes', 'recipes', 'batches', 'seq_counter', 'users', 'logs']:
@@ -591,13 +584,14 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         return None
 
 # ---------- INIT DB ----------
-init_db()
+try:
+    init_db()
+    st.success(f"✅ Database initialized at {DB_PATH}")
+except Exception as e:
+    st.error(f"❌ Database initialization failed: {e}\n{traceback.format_exc()}")
 
 # ---------- LOGIN ----------
 def login():
-    st.set_page_config(page_title="Pigment Monitor", layout="wide")
-    st.title("🔐 Pigment Dispersion System - Login")
-
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.username = None
@@ -626,7 +620,9 @@ def login():
             st.session_state.role = None
             st.rerun()
 
+st.set_page_config(page_title="Pigment Monitor", layout="wide")
 login()
+st.title("🎨 Pigment Dispersion System")
 
 # ---------- ROLE HELPERS ----------
 def is_admin():
@@ -635,9 +631,6 @@ def is_production():
     return st.session_state.role == "Production"
 def is_qa():
     return st.session_state.role == "QA"
-
-# ---------- MAIN APP ----------
-st.title("🎨 Pigment Dispersion System")
 
 # Build tabs
 tabs_list = []
@@ -654,25 +647,22 @@ if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
-        # Permission check
-        try:
-            test_path = os.path.join(BASE_DIR, "test_write.txt")
-            with open(test_path, "w") as f:
-                f.write("test")
-            os.remove(test_path)
-            st.success("✅ Database directory is writable.")
-        except Exception as e:
-            st.error(f"❌ Cannot write to directory: {e}")
-
-        # Clear edit states
+        # Clear edit states function
         def clear_all_edit_states():
             for key in list(st.session_state.keys()):
                 if key.startswith('edit_cc_') or key.startswith('edit_recipe_'):
                     del st.session_state[key]
 
-        if st.button("🔄 Reset Edit States"):
-            clear_all_edit_states()
-            st.rerun()
+        col_reset, col_db = st.columns([1, 4])
+        with col_reset:
+            if st.button("🔄 Reset Edit States"):
+                clear_all_edit_states()
+                st.rerun()
+        with col_db:
+            if st.button("🗑️ Reset Database (All Data Lost!)", type="primary"):
+                init_db()
+                st.success("Database reset!")
+                st.rerun()
 
         st.subheader("🎨 Colour Codes & Recipes")
 
@@ -696,18 +686,6 @@ if is_admin():
         # DISPLAY TREE
         colour_codes_df = get_colour_codes()
         recipes_df = get_recipes()
-
-        # Debug expander (shows raw tables)
-        with st.expander("🐞 DEBUG: Raw Tables", expanded=False):
-            st.subheader("Colour Codes")
-            st.dataframe(colour_codes_df)
-            st.subheader("Recipes (raw)")
-            conn = sqlite3.connect(DB_PATH)
-            raw_recipes = pd.read_sql_query("SELECT * FROM recipes", conn)
-            conn.close()
-            st.dataframe(raw_recipes)
-            st.subheader("Recipes with JOIN")
-            st.dataframe(recipes_df)
 
         if colour_codes_df.empty:
             st.info("No colour codes defined. Add one above.")
@@ -1322,7 +1300,7 @@ if is_admin():
                                 if new_pass:
                                     update_user(selected_user, new_pass, new_role)
                                 else:
-                                    conn = sqlite3.connect(DB_PATH)
+                                    conn = get_db_connection()
                                     c = conn.cursor()
                                     c.execute("SELECT password FROM users WHERE username=?", (selected_user,))
                                     old_pass = c.fetchone()[0]
