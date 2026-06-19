@@ -1204,7 +1204,7 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ---------- COA GENERATION (with recipe recovery) ----------
+    # ---------- COA GENERATION (FIXED – no 'continue') ----------
     with report_tabs[1]:
         st.subheader("📄 Certificate of Analysis")
         completed_list = get_completed_batches()
@@ -1255,15 +1255,13 @@ with tabs[report_index]:
             else:
                 batch = batch_df.iloc[0]
                 recipe_id = batch['recipe_id']
-
-                # Check if recipe exists
                 recipe_df = get_recipe_by_id(recipe_id)
+
                 if recipe_df.empty:
                     st.warning(
                         f"⚠️ Recipe ID {recipe_id} for batch '{batch_num}' is missing (recipe may have been deleted).")
-                    st.info("You can either re‑issue this batch with a valid recipe, or assign a new recipe below.")
+                    st.info("You can reassign a new recipe below.")
 
-                    # Option to reassign recipe
                     all_recipes = get_recipes()
                     if not all_recipes.empty:
                         recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['id']
@@ -1282,8 +1280,6 @@ with tabs[report_index]:
                             st.rerun()
                     else:
                         st.warning("No recipes available. Please define a recipe first.")
-                    # Stop further processing for this batch
-                    continue
                 else:
                     recipe = recipe_df.iloc[0]
 
@@ -1349,7 +1345,6 @@ with tabs[report_index]:
                         }
                     )
 
-                    # Generate PDF button – always visible when batch is valid
                     if st.button("📑 Generate COA PDF", type="primary"):
                         pdf_buffer = generate_coa_pdf(batch_num, template, edited_results)
                         if pdf_buffer:
