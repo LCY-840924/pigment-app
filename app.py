@@ -17,11 +17,9 @@ import traceback
 try:
     from PIL import Image
     import pyzbar.pyzbar as pyzbar
-
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
-
 
 def decode_qr_from_image(image):
     if not QR_AVAILABLE:
@@ -35,16 +33,13 @@ def decode_qr_from_image(image):
         pass
     return None
 
-
 # ---------- DATABASE SETUP ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'pigment.db')
 
-
 def get_db_connection():
     """Return a connection to the database."""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
-
 
 def init_db():
     """Create tables only if they don't exist. Never drop existing data."""
@@ -122,10 +117,8 @@ def init_db():
         conn.close()
         return "Using existing database."
 
-
 # Call init_db once at startup
 init_msg = init_db()
-
 
 # ---------- LOGGING ----------
 def add_log(username, action, details, batch_number=None, recipe_id=None):
@@ -133,14 +126,12 @@ def add_log(username, action, details, batch_number=None, recipe_id=None):
         conn = get_db_connection()
         c = conn.cursor()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute(
-            "INSERT INTO logs (timestamp, username, action, details, batch_number, recipe_id) VALUES (?,?,?,?,?,?)",
-            (timestamp, username, action, details, batch_number, recipe_id))
+        c.execute("INSERT INTO logs (timestamp, username, action, details, batch_number, recipe_id) VALUES (?,?,?,?,?,?)",
+                  (timestamp, username, action, details, batch_number, recipe_id))
         conn.commit()
         conn.close()
     except:
         pass
-
 
 # ---------- DATABASE FUNCTIONS ----------
 def get_colour_codes():
@@ -148,7 +139,6 @@ def get_colour_codes():
     df = pd.read_sql_query("SELECT * FROM colour_codes ORDER BY code", conn)
     conn.close()
     return df
-
 
 def add_colour_code(code, description, username):
     try:
@@ -162,7 +152,6 @@ def add_colour_code(code, description, username):
     except Exception as e:
         return False, str(e)
 
-
 def update_colour_code(code_id, code, description, username):
     try:
         conn = get_db_connection()
@@ -174,7 +163,6 @@ def update_colour_code(code_id, code, description, username):
         return True, None
     except Exception as e:
         return False, str(e)
-
 
 def delete_colour_code(code_id, username):
     try:
@@ -193,7 +181,6 @@ def delete_colour_code(code_id, username):
     except Exception as e:
         return False, str(e)
 
-
 def get_recipes():
     conn = get_db_connection()
     query = """
@@ -210,13 +197,11 @@ def get_recipes():
     conn.close()
     return df
 
-
 def get_recipe_by_id(recipe_id):
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM recipes WHERE id = ?", conn, params=(recipe_id,))
     conn.close()
     return df
-
 
 def add_recipe(colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                visc_min, visc_max, de_max, dl_tol, da_tol, db_tol, str_min, str_max, username):
@@ -232,12 +217,10 @@ def add_recipe(colour_code_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
         recipe_id = c.lastrowid
         conn.commit()
         conn.close()
-        add_log(username, "Add Recipe", f"Added recipe {colour_name} (colour code ID {colour_code_id})",
-                recipe_id=recipe_id)
+        add_log(username, "Add Recipe", f"Added recipe {colour_name} (colour code ID {colour_code_id})", recipe_id=recipe_id)
         return True, recipe_id
     except Exception as e:
         return False, str(e)
-
 
 def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
                   visc_min, visc_max, de_max, dl_tol, da_tol, db_tol,
@@ -260,7 +243,6 @@ def update_recipe(recipe_id, colour_name, tsc_min, tsc_max, ph_min, ph_max,
     except Exception as e:
         return False, str(e)
 
-
 def delete_recipe(recipe_id, username):
     try:
         conn = get_db_connection()
@@ -278,7 +260,6 @@ def delete_recipe(recipe_id, username):
     except Exception as e:
         return False, str(e)
 
-
 # ---------- BATCH FUNCTIONS ----------
 def get_batches():
     conn = get_db_connection()
@@ -286,13 +267,11 @@ def get_batches():
     conn.close()
     return df
 
-
 def get_completed_batches():
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM batches WHERE status = 'Completed' ORDER BY created_at DESC", conn)
     conn.close()
     return df
-
 
 def batch_exists(batch_number):
     conn = get_db_connection()
@@ -301,7 +280,6 @@ def batch_exists(batch_number):
     exists = c.fetchone() is not None
     conn.close()
     return exists
-
 
 def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username):
     conn = get_db_connection()
@@ -312,10 +290,8 @@ def add_batch(batch_number, recipe_id, colour_code, manufacturing_date, username
         (batch_id, batch_number, recipe_id, colour_code, 'Issued', 'Mixing', manufacturing_date))
     conn.commit()
     conn.close()
-    add_log(username, "Issue Batch", f"Issued batch {batch_number} for {colour_code}", batch_number=batch_number,
-            recipe_id=recipe_id)
+    add_log(username, "Issue Batch", f"Issued batch {batch_number} for {colour_code}", batch_number=batch_number, recipe_id=recipe_id)
     return batch_number
-
 
 def update_status(batch_id, status, stage, username):
     conn = get_db_connection()
@@ -325,9 +301,7 @@ def update_status(batch_id, status, stage, username):
     c.execute("UPDATE batches SET status=?, stage=? WHERE batch_id=?", (status, stage, batch_id))
     conn.commit()
     conn.close()
-    add_log(username, "Update Status", f"Batch {batch_number} status changed to {status} (stage: {stage})",
-            batch_number=batch_number)
-
+    add_log(username, "Update Status", f"Batch {batch_number} status changed to {status} (stage: {stage})", batch_number=batch_number)
 
 def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, username):
     conn = get_db_connection()
@@ -372,14 +346,12 @@ def update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, 
     add_log(username, "Submit QA", f"QA submitted for batch {batch_number}, result: {msg}", batch_number=batch_number)
     return msg
 
-
 # ---------- USER MANAGEMENT ----------
 def get_users():
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT username, role FROM users ORDER BY username", conn)
     conn.close()
     return df
-
 
 def add_user(username, password, role):
     conn = get_db_connection()
@@ -388,7 +360,6 @@ def add_user(username, password, role):
     conn.commit()
     conn.close()
 
-
 def update_user(username, password, role):
     conn = get_db_connection()
     c = conn.cursor()
@@ -396,14 +367,12 @@ def update_user(username, password, role):
     conn.commit()
     conn.close()
 
-
 def delete_user(username):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE username=?", (username,))
     conn.commit()
     conn.close()
-
 
 def check_login(username, password):
     conn = get_db_connection()
@@ -413,13 +382,11 @@ def check_login(username, password):
     conn.close()
     return row
 
-
 def get_logs():
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
     conn.close()
     return df
-
 
 # ---------- BACKUP / RESTORE ----------
 def export_db_to_zip():
@@ -437,7 +404,6 @@ def export_db_to_zip():
     zip_buffer.seek(0)
     return zip_buffer
 
-
 def import_db_from_zip(zip_file):
     conn = get_db_connection()
     c = conn.cursor()
@@ -449,7 +415,6 @@ def import_db_from_zip(zip_file):
                 df.to_sql(table, conn, if_exists='append', index=False)
     conn.commit()
     conn.close()
-
 
 # ---------- COA GENERATION ----------
 def generate_coa_pdf(batch_number, template, edited_results=None):
@@ -514,8 +479,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
             ("Da", f"± {recipe['da_tolerance']:.1f}", f"{default_results['Da']:.2f}"),
             ("Db", f"± {recipe['db_tolerance']:.1f}", f"{default_results['Db']:.2f}"),
             ("DE", f"≤ {recipe['de_max']:.1f}", f"{default_results['DE']:.2f}"),
-            ("Colour Strength", f"{recipe['strength_min']:.0f}-{recipe['strength_max']:.0f}%",
-             f"{default_results['Colour Strength']:.2f}%")
+            ("Colour Strength", f"{recipe['strength_min']:.0f}-{recipe['strength_max']:.0f}%", f"{default_results['Colour Strength']:.2f}%")
         ]
 
         buffer = io.BytesIO()
@@ -524,8 +488,7 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         story = []
 
         header_bold_style = ParagraphStyle('HeaderBold', parent=styles['Normal'], fontSize=9, leading=11, alignment=0)
-        header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'], fontSize=9, leading=11,
-                                             alignment=0)
+        header_normal_style = ParagraphStyle('HeaderNormal', parent=styles['Normal'], fontSize=9, leading=11, alignment=0)
 
         company_name = template.get('company_name', "TIARCO CHEMICAL (MALAYSIA) SDN. BHD.")
         reg_no = template.get('reg_no', "199101012802 (223114-K)")
@@ -618,10 +581,8 @@ def generate_coa_pdf(batch_number, template, edited_results=None):
         st.error(f"Error generating COA: {str(e)}")
         return None
 
-
 # ---------- STREAMLIT APP ----------
 st.set_page_config(page_title="Pigment Monitor", layout="wide")
-
 
 # ---- Login ----
 def login():
@@ -654,7 +615,6 @@ def login():
             st.session_state.role = None
             st.rerun()
 
-
 login()
 
 # ---- Sidebar debug ----
@@ -664,27 +624,20 @@ st.sidebar.write(f"Path: `{DB_PATH}`")
 st.sidebar.write(f"Exists: {os.path.exists(DB_PATH)}")
 st.sidebar.write(f"Init: {init_msg}")
 
-
 # ---- Role helpers ----
 def is_admin():
     return st.session_state.role == "Admin"
-
-
 def is_production():
     return st.session_state.role == "Production"
-
-
 def is_qa():
     return st.session_state.role == "QA"
-
 
 st.title("🎨 Pigment Dispersion System")
 
 # Build tabs
 tabs_list = []
 if is_admin():
-    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports", "👥 User Management",
-                 "📜 Activity Log"]
+    tabs_list = ["Define Recipe", "Issue Batch", "QA Testing", "WIP Progress", "📊 Reports", "👥 User Management", "📜 Activity Log"]
 elif is_production():
     tabs_list = ["Issue Batch", "WIP Progress", "📊 Reports"]
 elif is_qa():
@@ -696,13 +649,11 @@ if is_admin():
     with tabs[0]:
         st.header("📄 1. Define Recipe (Control Limits)")
 
-
         # Clear edit states function
         def clear_all_edit_states():
             for key in list(st.session_state.keys()):
                 if key.startswith('edit_cc_') or key.startswith('edit_recipe_'):
                     del st.session_state[key]
-
 
         col_reset, col_db = st.columns([1, 4])
         with col_reset:
@@ -787,8 +738,7 @@ if is_admin():
                             c1, c2 = st.columns(2)
                             with c1:
                                 if st.form_submit_button("✅ Update Code"):
-                                    ok, err = update_colour_code(cc_id, new_code_val.upper(), new_desc_val,
-                                                                 st.session_state.username)
+                                    ok, err = update_colour_code(cc_id, new_code_val.upper(), new_desc_val, st.session_state.username)
                                     if ok:
                                         st.success("✅ Colour code updated!")
                                         st.session_state.pop(f'edit_cc_{cc_id}', None)
@@ -850,10 +800,8 @@ if is_admin():
                                 with col1:
                                     st.write(f"**{recipe['colour_name']}**")
                                 with col2:
-                                    st.caption(
-                                        f"TSC: {recipe['tsc_min']:.1f}-{recipe['tsc_max']:.1f}%  |  pH: {recipe['ph_min']:.1f}-{recipe['ph_max']:.1f}")
-                                    st.caption(
-                                        f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP  |  DE ≤ {recipe['de_max']:.2f}")
+                                    st.caption(f"TSC: {recipe['tsc_min']:.1f}-{recipe['tsc_max']:.1f}%  |  pH: {recipe['ph_min']:.1f}-{recipe['ph_max']:.1f}")
+                                    st.caption(f"Visc: {recipe['visc_min']:.0f}-{recipe['visc_max']:.0f} cP  |  DE ≤ {recipe['de_max']:.2f}")
                                 with col3:
                                     if st.button(f"✏️ Edit", key=f"edit_recipe_{recipe_id}"):
                                         if st.session_state.get(f'edit_recipe_{recipe_id}', False):
@@ -876,31 +824,19 @@ if is_admin():
                                         edit_name = st.text_input("Colour Name", value=recipe['colour_name'])
                                         col1, col2 = st.columns(2)
                                         with col1:
-                                            e_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']),
-                                                                        step=0.1)
-                                            e_ph_min = st.number_input("pH Min", value=float(recipe['ph_min']),
-                                                                       step=0.1)
-                                            e_visc_min = st.number_input("Viscosity Min",
-                                                                         value=float(recipe['visc_min']), step=10.0)
-                                            e_de_max = st.number_input("DE Max", value=float(recipe['de_max']),
-                                                                       step=0.01)
-                                            e_dl_tol = st.number_input("DL Tolerance",
-                                                                       value=float(recipe['dl_tolerance']), step=0.1)
+                                            e_tsc_min = st.number_input("TSC Min", value=float(recipe['tsc_min']), step=0.1)
+                                            e_ph_min = st.number_input("pH Min", value=float(recipe['ph_min']), step=0.1)
+                                            e_visc_min = st.number_input("Viscosity Min", value=float(recipe['visc_min']), step=10.0)
+                                            e_de_max = st.number_input("DE Max", value=float(recipe['de_max']), step=0.01)
+                                            e_dl_tol = st.number_input("DL Tolerance", value=float(recipe['dl_tolerance']), step=0.1)
                                         with col2:
-                                            e_tsc_max = st.number_input("TSC Max", value=float(recipe['tsc_max']),
-                                                                        step=0.1)
-                                            e_ph_max = st.number_input("pH Max", value=float(recipe['ph_max']),
-                                                                       step=0.1)
-                                            e_visc_max = st.number_input("Viscosity Max",
-                                                                         value=float(recipe['visc_max']), step=10.0)
-                                            e_da_tol = st.number_input("Da Tolerance",
-                                                                       value=float(recipe['da_tolerance']), step=0.1)
-                                            e_db_tol = st.number_input("Db Tolerance",
-                                                                       value=float(recipe['db_tolerance']), step=0.1)
-                                            e_str_min = st.number_input("Strength Min",
-                                                                        value=float(recipe['strength_min']), step=1.0)
-                                            e_str_max = st.number_input("Strength Max",
-                                                                        value=float(recipe['strength_max']), step=1.0)
+                                            e_tsc_max = st.number_input("TSC Max", value=float(recipe['tsc_max']), step=0.1)
+                                            e_ph_max = st.number_input("pH Max", value=float(recipe['ph_max']), step=0.1)
+                                            e_visc_max = st.number_input("Viscosity Max", value=float(recipe['visc_max']), step=10.0)
+                                            e_da_tol = st.number_input("Da Tolerance", value=float(recipe['da_tolerance']), step=0.1)
+                                            e_db_tol = st.number_input("Db Tolerance", value=float(recipe['db_tolerance']), step=0.1)
+                                            e_str_min = st.number_input("Strength Min", value=float(recipe['strength_min']), step=1.0)
+                                            e_str_max = st.number_input("Strength Max", value=float(recipe['strength_max']), step=1.0)
 
                                         c1, c2 = st.columns(2)
                                         with c1:
@@ -1046,8 +982,7 @@ if is_admin() or is_production():
                     elif batch_exists(batch_number):
                         st.error(f"❌ Batch Number '{batch_number}' already exists.")
                     else:
-                        add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str,
-                                  st.session_state.username)
+                        add_batch(batch_number, recipe_id, colour_code, manufacturing_date_str, st.session_state.username)
                         st.toast(f"✅ Batch {batch_number} issued!", icon="✅")
                         for key in ['qr_recipe_id', 'qr_batch', 'colour_filter']:
                             st.session_state.pop(key, None)
@@ -1084,8 +1019,7 @@ if is_admin() or is_qa():
                 if not remark:
                     st.warning("⚠️ Please add a remark.")
                 else:
-                    msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark,
-                                    st.session_state.username)
+                    msg = update_qa(batch_id, tsc, ph, visc, de, dl, da, db, colour_strength, remark, st.session_state.username)
                     st.toast(msg, icon="🔬")
                     st.rerun()
         else:
@@ -1204,7 +1138,7 @@ with tabs[report_index]:
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ---------- COA GENERATION (FIXED – no 'continue') ----------
+    # ---------- COA GENERATION (AUTO‑REPAIR) ----------
     with report_tabs[1]:
         st.subheader("📄 Certificate of Analysis")
         completed_list = get_completed_batches()
@@ -1214,15 +1148,13 @@ with tabs[report_index]:
             with st.expander("✏️ Customize COA Template", expanded=False):
                 col1, col2 = st.columns(2)
                 with col1:
-                    company_name = st.text_input("Company", value="TIARCO CHEMICAL (MALAYSIA) SDN. BHD.",
-                                                 key="coa_company")
+                    company_name = st.text_input("Company", value="TIARCO CHEMICAL (MALAYSIA) SDN. BHD.", key="coa_company")
                     reg_no = st.text_input("Reg No.", value="199101012802 (223114-K)", key="coa_reg")
                     addr1 = st.text_input("Address 1", value="LOT 47962, PERSIARAN TASEK,", key="coa_addr1")
                     addr2 = st.text_input("Address 2", value="KAWASAN PERINDUSTRIAN TASEK,", key="coa_addr2")
                     addr3 = st.text_input("Address 3", value="31400 IPOH, PERAK, MALAYSIA.", key="coa_addr3")
                 with col2:
-                    phone = st.text_input("Phone/Fax", value="TEL: 605-5412018            FAX : 605-5412716",
-                                          key="coa_phone")
+                    phone = st.text_input("Phone/Fax", value="TEL: 605-5412018            FAX : 605-5412716", key="coa_phone")
                     title = st.text_input("Title", value="PROVISIONAL CERTIFICATE OF ANALYSIS", key="coa_title")
                     prep_by = st.text_input("Prepared by", value="MOK", key="coa_prepared")
                     rev_by = st.text_input("Reviewed by", value="H.JY", key="coa_reviewed")
@@ -1246,44 +1178,53 @@ with tabs[report_index]:
             if st.button("🔄 Load Batch Data"):
                 st.rerun()
 
-            # Fetch batch and recipe data
+            # Fetch batch
             all_batches = get_batches()
             batch_df = all_batches[all_batches['batch_number'] == batch_num]
 
             if batch_df.empty:
-                st.error(f"❌ Batch '{batch_num}' not found in database.")
+                st.error(f"❌ Batch '{batch_num}' not found.")
             else:
                 batch = batch_df.iloc[0]
                 recipe_id = batch['recipe_id']
                 recipe_df = get_recipe_by_id(recipe_id)
 
+                # If recipe is missing, try to auto‑assign
                 if recipe_df.empty:
-                    st.warning(
-                        f"⚠️ Recipe ID {recipe_id} for batch '{batch_num}' is missing (recipe may have been deleted).")
-                    st.info("You can reassign a new recipe below.")
-
+                    st.warning(f"⚠️ Recipe ID {recipe_id} for batch '{batch_num}' is missing.")
+                    # Try to find a recipe with the same colour_code
                     all_recipes = get_recipes()
-                    if not all_recipes.empty:
-                        recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['id']
-                                          for _, row in all_recipes.iterrows()}
-                        selected_recipe_display = st.selectbox("Assign new recipe to this batch",
-                                                               list(recipe_options.keys()))
-                        new_recipe_id = recipe_options[selected_recipe_display]
-                        if st.button("🔄 Update Batch Recipe"):
-                            conn = get_db_connection()
-                            c = conn.cursor()
-                            c.execute("UPDATE batches SET recipe_id = ? WHERE batch_number = ?",
-                                      (new_recipe_id, batch_num))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"✅ Batch '{batch_num}' updated with recipe '{selected_recipe_display}'!")
-                            st.rerun()
+                    matching = all_recipes[all_recipes['colour_code'] == batch['colour_code']]
+                    if not matching.empty:
+                        new_recipe_id = matching.iloc[0]['id']
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("UPDATE batches SET recipe_id = ? WHERE batch_number = ?", (new_recipe_id, batch_num))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"✅ Auto‑assigned recipe '{matching.iloc[0]['colour_name']}' to batch.")
+                        st.rerun()
                     else:
-                        st.warning("No recipes available. Please define a recipe first.")
+                        st.info("No recipe with the same colour code. Please assign manually below.")
+                        all_recipes = get_recipes()
+                        if not all_recipes.empty:
+                            recipe_options = {f"{row['colour_code']} - {row['colour_name']}": row['id']
+                                              for _, row in all_recipes.iterrows()}
+                            selected_recipe_display = st.selectbox("Assign a recipe", list(recipe_options.keys()))
+                            new_recipe_id = recipe_options[selected_recipe_display]
+                            if st.button("🔄 Update Batch Recipe"):
+                                conn = get_db_connection()
+                                c = conn.cursor()
+                                c.execute("UPDATE batches SET recipe_id = ? WHERE batch_number = ?", (new_recipe_id, batch_num))
+                                conn.commit()
+                                conn.close()
+                                st.success(f"✅ Batch updated with recipe '{selected_recipe_display}'!")
+                                st.rerun()
+                        else:
+                            st.warning("No recipes available. Please define a recipe first.")
                 else:
                     recipe = recipe_df.iloc[0]
-
-                    # Date calculations
+                    # ----- Normal COA flow -----
                     mfg_val = batch['manufacturing_date']
                     if pd.isna(mfg_val) or mfg_val is None:
                         mfg_date = datetime.now()
@@ -1410,7 +1351,7 @@ if is_admin():
                     with st.form("edit_user_form"):
                         new_pass = st.text_input("New Password", type="password", value="")
                         new_role = st.selectbox("New Role", ["Admin", "Production", "QA"],
-                                                index=["Admin", "Production", "QA"].index(user_row['role']))
+                                                index=["Admin","Production","QA"].index(user_row['role']))
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.form_submit_button("Update User"):
